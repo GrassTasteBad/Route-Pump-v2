@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RoutePump Admin Portal</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <!-- Google Fonts & Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Google Maps JavaScript API -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAGMiQQ_bqlwYd8vC6JP0Z3d7phZSQM8eo&loading=async&callback=Function.prototype" async defer></script>
+</head>
+<body>
+
+  <!-- Dynamic Glowing Background -->
+  <div class="glow-orbs">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+  </div>
+
+  <!-- AUTH SECTION (Overlay) -->
+  <div id="auth-section" class="auth-wrapper">
+    <div class="auth-card glass-panel">
+      <img src="/logo.png" class="auth-logo" alt="RoutePump Logo" style="max-height: 70px; width: auto; object-fit: contain; margin-bottom: 20px;">
+      <p class="auth-subtitle">Admin Security Portal</p>
+      
+      <div id="auth-alert" class="alert-message error"></div>
+
+      <form id="login-form">
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input type="email" id="login-email" class="form-input" placeholder="admin@routepump.com" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input type="password" id="login-password" class="form-input" placeholder="••••••••" required>
+        </div>
+        <button type="submit" class="btn-primary" id="login-submit-btn">
+          <span>Sign In</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- APP SECTION -->
+  <div id="app-section" class="dashboard-container" style="display: none;">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-brand" style="justify-content: center; padding: 10px 0;">
+        <img src="/logo.png" class="sidebar-logo" alt="RoutePump Logo" style="height: 35px; width: auto; object-fit: contain;">
+      </div>
+
+      <ul class="sidebar-menu">
+        <li class="sidebar-menu-item active" data-page="dashboard">
+          <a href="#"><i class="fa-solid fa-chart-pie"></i> Dashboard</a>
+        </li>
+        <li class="sidebar-menu-item" data-page="stations">
+          <a href="#"><i class="fa-solid fa-map-location-dot"></i> Gas Stations</a>
+        </li>
+        <li class="sidebar-menu-item" data-page="catalog">
+          <a href="#"><i class="fa-solid fa-car"></i> Vehicle Catalog</a>
+        </li>
+        <li class="sidebar-menu-item" data-page="anomalies">
+          <a href="#"><i class="fa-solid fa-circle-exclamation"></i> Price Anomalies <span id="anomaly-badge-count" class="badge badge-danger" style="display:none; margin-left: 5px;">0</span></a>
+        </li>
+        <li class="sidebar-menu-item" data-page="users">
+          <a href="#"><i class="fa-solid fa-users"></i> User Accounts</a>
+        </li>
+        <li class="sidebar-menu-item" data-page="analytics">
+          <a href="#"><i class="fa-solid fa-chart-line"></i> Analytics</a>
+        </li>
+      </ul>
+
+      <div class="sidebar-user">
+        <div class="sidebar-user-avatar" id="avatar-letters">A</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name" id="user-display-name">Administrator</div>
+          <div class="sidebar-user-role">System Admin</div>
+        </div>
+        <button class="sidebar-logout-btn" id="logout-btn" title="Logout">
+          <i class="fa-solid fa-right-from-bracket"></i>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Panel -->
+    <main class="main-content">
+      <div id="global-alert" class="alert-message"></div>
+
+      <!-- DASHBOARD PAGE -->
+      <section id="dashboard-page" class="page-view">
+        <div class="page-header">
+          <div>
+            <h2 class="page-title">Dashboard Overview</h2>
+            <p class="page-subtitle">Real-time crowdsourcing analytics & database status</p>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Gas Stations</div>
+            <div class="stat-card-value" id="stat-stations">0</div>
+            <i class="fa-solid fa-store stat-card-icon"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Vehicle Catalog</div>
+            <div class="stat-card-value" id="stat-vehicles">0</div>
+            <i class="fa-solid fa-car-side stat-card-icon"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Pending Anomalies</div>
+            <div class="stat-card-value" id="stat-anomalies" style="color: var(--accent-rose);">0</div>
+            <i class="fa-solid fa-triangle-exclamation stat-card-icon" style="color: var(--accent-rose);"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Davao Market Price (Unl)</div>
+            <div class="stat-card-value" id="stat-unl-avg">₱0.00</div>
+            <i class="fa-solid fa-tags stat-card-icon"></i>
+          </div>
+        </div>
+
+        <div class="content-grid">
+          <!-- Active Station Queues -->
+          <div class="glass-panel table-panel">
+            <h3 class="table-title" style="margin-bottom: 20px;"><i class="fa-solid fa-people-line" style="color: var(--accent-cyan);"></i> Live Station wait times (Participatory Q(t))</h3>
+            <table class="custom-table">
+              <thead>
+                <tr>
+                  <th>Station</th>
+                  <th>Branch</th>
+                  <th>Active Vehicles (Q)</th>
+                  <th>Est. Wait Time</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="dashboard-queues-table">
+                <!-- Seeding via JS -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Market Prices Summary -->
+          <div class="glass-panel table-panel">
+            <h3 class="table-title" style="margin-bottom: 20px;"><i class="fa-solid fa-money-bill-wave" style="color: var(--accent-purple);"></i> Davao Averages</h3>
+            <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 20px;">
+              <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border-muted);">
+                <span style="color: var(--text-secondary);">Reg Unleaded (91)</span>
+                <strong id="avg-regular-unleaded-91" style="color: var(--accent-cyan);">₱0.00</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border-muted);">
+                <span style="color: var(--text-secondary);">Prem Unleaded (95)</span>
+                <strong id="avg-premium-unleaded-95" style="color: var(--accent-cyan);">₱0.00</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border-muted);">
+                <span style="color: var(--text-secondary);">Regular Diesel</span>
+                <strong id="avg-regular-diesel" style="color: var(--accent-cyan);">₱0.00</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; padding-bottom: 8px;">
+                <span style="color: var(--text-secondary);">Premium Diesel</span>
+                <strong id="avg-premium-diesel" style="color: var(--accent-cyan);">₱0.00</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- GAS STATIONS PAGE -->
+      <section id="stations-page" class="page-view" style="display: none;">
+        <div class="page-header">
+          <div>
+            <h2 class="page-title">Gas Stations Directory</h2>
+            <p class="page-subtitle">Manage geofence polygons, coordinates, and branch information</p>
+          </div>
+          <button class="btn-primary" id="add-station-btn" style="width: auto;"><i class="fa-solid fa-plus"></i> Add Gas Station</button>
+        </div>
+
+        <div class="map-panel glass-panel" style="position: relative;">
+          <div id="map"></div>
+          <button id="map-locate-btn" class="btn-primary" style="position: absolute; bottom: 20px; right: 20px; width: auto; z-index: 5; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; align-items: center; gap: 8px;">
+            <i class="fa-solid fa-location-crosshairs"></i>
+            <span>Locate Me</span>
+          </button>
+        </div>
+
+        <div class="glass-panel table-panel">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Branch</th>
+                <th>Coordinates (Lat, Lng)</th>
+                <th>Status</th>
+                <th>Reg Unl (91)</th>
+                <th>Prem Unl (95)</th>
+                <th>Reg Diesel</th>
+                <th>Prem Diesel</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="stations-table-body">
+              <!-- JS loaded -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VEHICLE CATALOG PAGE -->
+      <section id="catalog-page" class="page-view" style="display: none;">
+        <div class="page-header">
+          <div>
+            <h2 class="page-title">Vehicle Catalog Database</h2>
+            <p class="page-subtitle">Configure standardized vehicle fuel efficiencies (km/L)</p>
+          </div>
+          <div class="page-header-actions">
+            <button class="btn-secondary" id="sync-catalog-btn" style="width: auto;"><i class="fa-solid fa-arrows-rotate"></i> Update List</button>
+            <button class="btn-primary" id="add-catalog-btn" style="width: auto;"><i class="fa-solid fa-plus"></i> Add Vehicle Type</button>
+          </div>
+        </div>
+
+        <!-- Search & Filter Controls -->
+        <div class="search-filter-row" style="margin-bottom: 20px; display: flex; gap: 15px; align-items: center; width: 100%;">
+          <div style="flex-grow: 1; position: relative;">
+            <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 14px; top: 14px; color: var(--text-secondary);"></i>
+            <input type="text" id="catalog-search" class="form-input" placeholder="Search by make, model, or year..." style="padding-left: 40px; width: 100%;">
+          </div>
+          <div style="width: 200px; flex-shrink: 0;">
+            <select id="catalog-filter-make" class="form-input" style="width: 100%;">
+              <option value="">All Makes</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="glass-panel table-panel">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Make</th>
+                <th>Model</th>
+                <th>Year</th>
+                <th>Displacement</th>
+                <th>Fuel Variant</th>
+                <th>Base Efficiency (km/L)</th>
+                <th>Idling Rate (L/h)</th>
+              </tr>
+            </thead>
+            <tbody id="catalog-table-body">
+              <!-- JS Loaded -->
+            </tbody>
+          </table>
+
+          <!-- Pagination Controls -->
+          <div class="pagination-row" style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center; padding-top: 15px; border-top: 1px solid var(--border-muted);">
+            <span id="catalog-pagination-info" style="color: var(--text-secondary); font-size: 13.5px;">Showing 0 to 0 of 0 entries</span>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn-secondary" id="catalog-prev-btn" style="padding: 6px 12px; font-size: 12.5px;"><i class="fa-solid fa-chevron-left"></i> Previous</button>
+              <button class="btn-secondary" id="catalog-next-btn" style="padding: 6px 12px; font-size: 12.5px;">Next <i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- MANUAL REPORT QUEUE / PRICE ANOMALIES PAGE -->
+      <section id="anomalies-page" class="page-view" style="display: none;">
+        <div class="page-header">
+          <div>
+            <h2 class="page-title">Manual Report Queue & Anomaly Hub</h2>
+            <p class="page-subtitle">Moderate crowdsourced prices, verify OCR proof, and update reporter trust ratings</p>
+          </div>
+          <div class="page-header-actions">
+            <button class="btn-secondary" id="refresh-anomalies-btn" style="width: auto;"><i class="fa-solid fa-rotate"></i> Refresh Queue</button>
+          </div>
+        </div>
+
+        <!-- Metric Overview Grid -->
+        <div class="stats-grid" style="margin-bottom: 24px;">
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Total Submissions</div>
+            <div class="stat-card-value" id="queue-stat-total">0</div>
+            <i class="fa-solid fa-inbox stat-card-icon"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Pending Audit</div>
+            <div class="stat-card-value" id="queue-stat-pending" style="color: var(--accent-amber);">0</div>
+            <i class="fa-solid fa-hourglass-half stat-card-icon" style="color: var(--accent-amber);"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Approved Submissions</div>
+            <div class="stat-card-value" id="queue-stat-approved" style="color: var(--accent-emerald);">0</div>
+            <i class="fa-solid fa-circle-check stat-card-icon" style="color: var(--accent-emerald);"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Avg Reporter Trust</div>
+            <div class="stat-card-value" id="queue-stat-trust" style="color: var(--accent-cyan);">0.0</div>
+            <i class="fa-solid fa-shield-halved stat-card-icon" style="color: var(--accent-cyan);"></i>
+          </div>
+        </div>
+
+        <!-- Queue Segmented Filter Tabs -->
+        <div class="report-tabs-row">
+          <button class="report-tab active" data-filter="pending">
+            <i class="fa-solid fa-clock-rotate-left"></i> Pending Audit <span class="report-tab-count" id="tab-count-pending">0</span>
+          </button>
+          <button class="report-tab" data-filter="all">
+            <i class="fa-solid fa-list-check"></i> All Reports <span class="report-tab-count" id="tab-count-all">0</span>
+          </button>
+          <button class="report-tab" data-filter="resolved">
+            <i class="fa-solid fa-circle-check"></i> Approved <span class="report-tab-count" id="tab-count-approved">0</span>
+          </button>
+          <button class="report-tab" data-filter="dismissed">
+            <i class="fa-solid fa-circle-xmark"></i> Rejected <span class="report-tab-count" id="tab-count-rejected">0</span>
+          </button>
+        </div>
+
+        <!-- Search & Fuel Filter Row -->
+        <div class="search-filter-row" style="margin-bottom: 20px; display: flex; gap: 15px; align-items: center; width: 100%;">
+          <div style="flex-grow: 1; position: relative;">
+            <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 14px; top: 14px; color: var(--text-secondary);"></i>
+            <input type="text" id="anomalies-search" class="form-input" placeholder="Search by station, branch, reporter, or description..." style="padding-left: 40px; width: 100%;">
+          </div>
+          <div style="width: 200px; flex-shrink: 0;">
+            <select id="anomalies-filter-fuel" class="form-input" style="width: 100%;">
+              <option value="">All Fuel Types</option>
+              <option value="regular unleaded (91)">Unleaded (91)</option>
+              <option value="premium unleaded(95)">Unleaded (95)</option>
+              <option value="regular diesel">Regular Diesel</option>
+              <option value="premium diesel">Premium Diesel</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Main Report Queue Table -->
+        <div class="glass-panel table-panel">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Station & Branch</th>
+                <th>Fuel Type</th>
+                <th>Reported Price & Variance</th>
+                <th>Reporter & Trust Score</th>
+                <th>Submission Method & Time</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="anomalies-table-body">
+              <!-- JS Loaded -->
+            </tbody>
+          </table>
+
+          <!-- Empty State Container -->
+          <div id="anomalies-empty-state" class="empty-queue-state" style="display: none;">
+            <i class="fa-solid fa-shield-check empty-queue-icon"></i>
+            <div class="empty-queue-title">No Reports Found</div>
+            <div class="empty-queue-desc">There are currently no manual price reports matching your filter criteria. All pending queues are clear!</div>
+          </div>
+
+          <!-- Pagination Controls -->
+          <div class="pagination-row" id="anomalies-pagination-row" style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center; padding-top: 15px; border-top: 1px solid var(--border-muted);">
+            <span id="anomalies-pagination-info" style="color: var(--text-secondary); font-size: 13.5px;">Showing 0 to 0 of 0 entries</span>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn-secondary" id="anomalies-prev-btn" style="padding: 6px 12px; font-size: 12.5px;"><i class="fa-solid fa-chevron-left"></i> Previous</button>
+              <button class="btn-secondary" id="anomalies-next-btn" style="padding: 6px 12px; font-size: 12.5px;">Next <i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+
+      <!-- USERS PAGE -->
+      <section id="users-page" class="page-view" style="display: none;">
+        <div class="page-header">
+          <div>
+            <h2 class="page-title">User Account Management</h2>
+            <p class="page-subtitle">Manage motorist, partner, and admin accounts linked to gas stations</p>
+          </div>
+          <button class="btn-primary" id="add-user-btn" style="width: auto;"><i class="fa-solid fa-user-plus"></i> Add User</button>
+        </div>
+
+        <div class="glass-panel table-panel">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Linked Station</th>
+                <th>Status</th>
+                <th>Joined</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body">
+              <!-- JS Loaded -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- DESCRIPTIVE ANALYTICS PAGE -->
+      <section id="analytics-page" class="page-view" style="display: none;">
+        <div class="page-header">
+          <div>
+            <h2 class="page-title">Descriptive Analytics Dashboard</h2>
+            <p class="page-subtitle">Real-time summaries of crowdsourced activity and vehicle metrics</p>
+          </div>
+        </div>
+
+        <div class="content-grid" style="grid-template-columns: 1fr 1fr; gap: 24px;">
+          <!-- Fuel Type Distribution Chart -->
+          <div class="glass-panel table-panel">
+            <h3 class="table-title" style="margin-bottom: 20px;"><i class="fa-solid fa-pie-chart" style="color: var(--accent-cyan);"></i> Price Reports by Fuel Type</h3>
+            <div id="fuel-type-distribution-container" style="display: flex; flex-direction: column; gap: 16px; margin-top: 20px;">
+              <!-- Dynamic Bars seeded by JS -->
+            </div>
+          </div>
+
+          <!-- Vehicle Efficiency Categorization Table -->
+          <div class="glass-panel table-panel">
+            <h3 class="table-title" style="margin-bottom: 20px;"><i class="fa-solid fa-truck-monster" style="color: var(--accent-purple);"></i> Fleet Efficiency by Class</h3>
+            <table class="custom-table">
+              <thead>
+                <tr>
+                  <th>Vehicle Type</th>
+                  <th>Avg Efficiency (km/L)</th>
+                  <th>Avg Idling Rate (L/h)</th>
+                  <th>Vehicles Logged</th>
+                </tr>
+              </thead>
+              <tbody id="vehicle-efficiency-table-body">
+                <!-- Dynamic Rows seeded by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="glass-panel table-panel" style="margin-top: 24px;">
+          <h3 class="table-title" style="margin-bottom: 20px;"><i class="fa-solid fa-arrow-trend-up" style="color: var(--accent-amber);"></i> Fuel Price Monthly Trend (Average PHP)</h3>
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>Avg Unleaded Price</th>
+                <th>Avg Diesel Price</th>
+              </tr>
+            </thead>
+            <tbody id="monthly-trends-table-body">
+              <!-- Dynamic Rows seeded by JS -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ADD STATION MODAL -->
+  <div id="station-modal" class="modal-backdrop">
+    <div class="modal-card glass-panel">
+      <div class="modal-title-row">
+        <h3 class="table-title" id="station-modal-title">Add Gas Station</h3>
+        <button class="modal-close-btn" onclick="closeModal('station-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="station-form">
+        <div class="form-group">
+          <label class="form-label">Station Brand Name</label>
+          <input type="text" id="station-name" class="form-input" placeholder="Petron / Shell / Caltex" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Branch Location</label>
+          <input type="text" id="station-branch" class="form-input" placeholder="Roxas Avenue" required>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div class="form-group">
+            <label class="form-label">Latitude</label>
+            <input type="number" id="station-lat" step="any" class="form-input" placeholder="7.0706" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Longitude</label>
+            <input type="number" id="station-lng" step="any" class="form-input" placeholder="125.6152" required>
+          </div>
+        </div>
+        <p style="font-size: 12px; color: var(--text-secondary); margin-top: -8px;"><i class="fa-solid fa-circle-info" style="color: var(--accent-cyan);"></i> Click anywhere on the map to auto-fill the coordinates above.</p>
+        <div class="form-actions-row">
+          <button type="button" class="btn-secondary" onclick="closeModal('station-modal')">Cancel</button>
+          <button type="submit" class="btn-primary" style="width: auto;">Save Station</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ADD VEHICLE CATALOG MODAL -->
+  <div id="catalog-modal" class="modal-backdrop">
+    <div class="modal-card glass-panel">
+      <div class="modal-title-row">
+        <h3 class="table-title">Add Vehicle Catalog Type</h3>
+        <button class="modal-close-btn" onclick="closeModal('catalog-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <!-- FuelEconomy.gov Integration Section -->
+      <div style="padding: 15px; border: 1px dashed var(--accent-cyan); border-radius: 8px; margin-bottom: 20px; background: rgba(6,182,212,0.03);">
+        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: var(--accent-cyan);"><i class="fa-solid fa-cloud-arrow-down"></i> Autofill from FuelEconomy.gov</h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" style="font-size: 11px;">Select Year</label>
+            <select id="fe-year" class="form-input" style="padding: 6px; font-size: 13px;">
+              <option value="">-- Year --</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" style="font-size: 11px;">Select Make</label>
+            <select id="fe-make" class="form-input" style="padding: 6px; font-size: 13px;" disabled>
+              <option value="">-- Make --</option>
+            </select>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" style="font-size: 11px;">Select Model</label>
+            <select id="fe-model" class="form-input" style="padding: 6px; font-size: 13px;" disabled>
+              <option value="">-- Model --</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" style="font-size: 11px;">Select Option</label>
+            <select id="fe-option" class="form-input" style="padding: 6px; font-size: 13px;" disabled>
+              <option value="">-- Option --</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" id="fe-btn" class="btn-primary" style="padding: 6px 12px; font-size: 12px; width: 100%; border-radius: 6px;" disabled>
+          <i class="fa-solid fa-arrows-rotate"></i> Load Vehicle Specifications
+        </button>
+      </div>
+
+      <form id="catalog-form">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div class="form-group">
+            <label class="form-label">Manufacturer (Make)</label>
+            <input type="text" id="catalog-make" class="form-input" placeholder="Toyota" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Model Name</label>
+            <input type="text" id="catalog-model" class="form-input" placeholder="Vios" required>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div class="form-group">
+            <label class="form-label">Year</label>
+            <input type="number" id="catalog-year" class="form-input" placeholder="2022" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Engine Displacement</label>
+            <input type="text" id="catalog-displacement" class="form-input" placeholder="1.3L" required>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div class="form-group">
+            <label class="form-label">Fuel Variant</label>
+            <select id="catalog-fuel" class="form-input" required>
+              <option value="unleaded">Unleaded</option>
+              <option value="diesel">Diesel</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Efficiency (km/L)</label>
+            <input type="number" id="catalog-efficiency" step="0.01" class="form-input" placeholder="14.5" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Idling Rate (L/h)</label>
+          <input type="number" id="catalog-idling-rate" step="0.01" min="0.1" max="10" class="form-input" placeholder="1.20" required>
+          <p style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;"><i class="fa-solid fa-circle-info" style="color: var(--accent-cyan);"></i> Fuel burned per hour while the engine is idling (e.g. 0.3 for motorcycles, 1.2 for sedans, 1.8 for large SUVs/trucks).</p>
+        </div>
+        <div class="form-actions-row">
+          <button type="button" class="btn-secondary" onclick="closeModal('catalog-modal')">Cancel</button>
+          <button type="submit" class="btn-primary" style="width: auto;">Save Type</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ADD USER MODAL -->
+  <div id="user-modal" class="modal-backdrop">
+    <div class="modal-card glass-panel">
+      <div class="modal-title-row">
+        <h3 class="table-title">Add User Account</h3>
+        <button class="modal-close-btn" onclick="closeModal('user-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="user-form">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div class="form-group">
+            <label class="form-label">Full Name</label>
+            <input type="text" id="user-name" class="form-input" placeholder="Juan Dela Cruz" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Email Address</label>
+            <input type="email" id="user-email" class="form-input" placeholder="user@example.com" required>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+          <div class="form-group">
+            <label class="form-label">Password</label>
+            <input type="password" id="user-password" class="form-input" placeholder="Min. 6 characters" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Role</label>
+            <select id="user-role" class="form-input" required>
+              <option value="partner">Partner (Gas Station)</option>
+              <option value="motorist">Motorist</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" id="user-station-group">
+          <label class="form-label">Linked Gas Station</label>
+          <select id="user-station" class="form-input">
+            <option value="">-- Select a gas station --</option>
+          </select>
+          <p style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;"><i class="fa-solid fa-circle-info" style="color: var(--accent-cyan);"></i> Required for partner accounts.</p>
+        </div>
+        <div class="form-actions-row">
+          <button type="button" class="btn-secondary" onclick="closeModal('user-modal')">Cancel</button>
+          <button type="submit" class="btn-primary" style="width: auto;">Create User</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- REPORT DETAIL INSPECTION MODAL -->
+  <div id="report-detail-modal" class="modal-backdrop">
+    <div class="modal-card glass-panel" style="max-width: 600px;">
+      <div class="modal-title-row">
+        <h3 class="table-title" id="report-modal-title"><i class="fa-solid fa-magnifying-glass-chart" style="color: var(--accent-cyan);"></i> Report Inspection & Telemetry Audit</h3>
+        <button class="modal-close-btn" onclick="closeModal('report-detail-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="report-modal-body">
+        <!-- Seeded dynamically via JS -->
+      </div>
+      <div class="form-actions-row" id="report-modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeModal('report-detail-modal')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Script -->
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
+
