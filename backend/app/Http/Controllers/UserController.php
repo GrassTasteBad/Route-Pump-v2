@@ -88,6 +88,22 @@ class UserController extends Controller
         return response(['message' => 'User account deactivated successfully.'], 200);
     }
 
+    // POST /api/users/{id}/activate
+    // Reactivates a user account so they can log in again
+    public function activate(Request $request, $id)
+    {
+        $user = User::find($id);
+
+        if (!$user) {
+            return response(['message' => 'User not found.'], 404);
+        }
+
+        $user->status = 'active';
+        $user->save();
+
+        return response(['message' => 'User account activated successfully.', 'user' => $user], 200);
+    }
+
     // GET /api/leaderboard
     // Returns top motorists ranked by trust score and price report count
     public function leaderboard(Request $request)

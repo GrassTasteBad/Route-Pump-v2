@@ -32,7 +32,7 @@ class _AuthGateState extends State<AuthGate> {
           'email': _emailController.text.trim(),
           'password': _passwordController.text,
         }),
-      ).timeout(const Duration(seconds: 4));
+      ).timeout(const Duration(seconds: 10));
 
       final data = jsonDecode(response.body);
 

@@ -59,10 +59,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/anomalies/{id}/resolve', [AnomalyController::class, 'resolve']);
     Route::post('/anomalies/{id}/dismiss', [AnomalyController::class, 'dismiss']);
 
+    // Motorist Price Submissions Summary APIs (Admin)
+    Route::get('/price-submissions', [GasStationController::class, 'getAllSubmissions']);
+    Route::post('/price-submissions/{id}/approve', [GasStationController::class, 'approveSubmission']);
+    Route::post('/price-submissions/{id}/reject', [GasStationController::class, 'rejectSubmission']);
+
     // User Management APIs (Admin)
     Route::get('/users', [UserController::class, 'index']);
     Route::post('/users', [UserController::class, 'store']);
     Route::delete('/users/{id}', [UserController::class, 'destroy']);
+    Route::post('/users/{id}/activate', [UserController::class, 'activate']);
 
     // Watchlist Favorites APIs
     Route::get('/watchlist', [WatchlistController::class, 'index']);

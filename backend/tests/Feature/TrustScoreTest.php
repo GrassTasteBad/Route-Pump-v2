@@ -116,6 +116,7 @@ class TrustScoreTest extends TestCase
             'price' => 60.00,
             'reported_by' => $this->motorist->id,
             'status' => 'crowdsourced',
+            'is_inside_geofence' => false,
             'created_at' => now(),
         ]);
 
@@ -244,5 +245,153 @@ class TrustScoreTest extends TestCase
         ]);
         $loginResponse->assertStatus(403);
         $loginResponse->assertJsonFragment(['message' => 'Your account has been deactivated.']);
+
+        // 3. Reactivate motorist
+        $activateResponse = $this->postJson("/api/users/{$this->motorist->id}/activate");
+        $activateResponse->assertStatus(200);
+        $activateResponse->assertJsonFragment(['message' => 'User account activated successfully.']);
+
+        $this->motorist->refresh();
+        $this->assertEquals('active', $this->motorist->status);
+
+        // 4. Try logging in again after activation
+        $reLoginResponse = $this->postJson('/api/login', [
+            'email' => $this->motorist->email,
+            'password' => 'password',
+        ]);
+        $reLoginResponse->assertStatus(200);
+        $reLoginResponse->assertJsonStructure(['token', 'user']);
+    }
+
+    /**
+     * Test price report succeeds from remote coordinates (no geofence restriction).
+     */
+    public function test_remote_price_report_without_geofence_restriction(): void
+    {
+        Sanctum::actingAs($this->motorist);
+
+        // Pre-create historical price
+        FuelPrice::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'station_id' => $this->station->id,
+            'fuel_type' => 'regular unleaded (91)',
+            'price' => 75.00,
+            'status' => 'merchant_verified',
+            'reported_by' => $this->motorist->id,
+            'created_at' => now()->subDays(1),
+        ]);
+
+        // Submit from coordinates far away (outside ~100m geofence)
+        $response = $this->postJson("/api/gas-stations/{$this->station->id}/prices", [
+            'fuel_type' => 'regular unleaded (91)',
+            'price' => 79.00,
+            'latitude' => 7.5000,
+            'longitude' => 125.5000,
+        ]);
+
+        $response->assertStatus(201);
+        $response->assertJsonFragment(['is_inside_geofence' => false]);
+
+        // Station active price must STAY 75.00 (unchanged) on backend & admin side!
+        $latest = FuelPrice::getLatestValidPrice($this->station->id, 'regular unleaded (91)');
+        $this->assertEquals(75.00, (double)$latest->price);
+    }
+
+    /**
+     * Test price report submitted within geofence range updates station price immediately.
+     */
+    public function test_geofenced_price_report_updates_immediately(): void
+    {
+        Sanctum::actingAs($this->motorist);
+
+        // Submit price with coordinates matching station position (inside geofence)
+        $response = $this->postJson("/api/gas-stations/{$this->station->id}/prices", [
+            'fuel_type' => 'regular unleaded (91)',
+            'price' => 68.50,
+            'latitude' => (float)$this->station->latitude,
+            'longitude' => (float)$this->station->longitude,
+        ]);
+
+        $response->assertStatus(201);
+
+        $latest = FuelPrice::getLatestValidPrice($this->station->id, 'regular unleaded (91)');
+        $this->assertNotNull($latest);
+        $this->assertEquals(68.50, (double)$latest->price);
+    }
+
+    /**
+     * Test three or more distinct motorists must submit exact same price remotely to change station price.
+     */
+    public function test_three_motorists_consensus_required_to_change_price(): void
+    {
+        $m1 = User::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'name' => 'Motorist 1',
+            'email' => 'm1@example.com',
+            'password' => bcrypt('password'),
+            'role' => 'motorist',
+            'trust_score' => 50,
+        ]);
+        $m2 = User::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'name' => 'Motorist 2',
+            'email' => 'm2@example.com',
+            'password' => bcrypt('password'),
+            'role' => 'motorist',
+            'trust_score' => 50,
+        ]);
+        $m3 = User::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'name' => 'Motorist 3',
+            'email' => 'm3@example.com',
+            'password' => bcrypt('password'),
+            'role' => 'motorist',
+            'trust_score' => 50,
+        ]);
+
+        // Fuel type: regular diesel (remote submissions with is_inside_geofence = false)
+        // 1st motorist submits 64.00 remotely
+        FuelPrice::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'station_id' => $this->station->id,
+            'fuel_type' => 'regular diesel',
+            'price' => 64.00,
+            'reported_by' => $m1->id,
+            'status' => 'crowdsourced',
+            'is_inside_geofence' => false,
+            'created_at' => now(),
+        ]);
+        // 1 motorist remotely: price should NOT be active yet (leaves price as is)
+        $this->assertNull(FuelPrice::getLatestValidPrice($this->station->id, 'regular diesel'));
+
+        // 2nd motorist submits exact same 64.00 remotely
+        FuelPrice::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'station_id' => $this->station->id,
+            'fuel_type' => 'regular diesel',
+            'price' => 64.00,
+            'reported_by' => $m2->id,
+            'status' => 'crowdsourced',
+            'is_inside_geofence' => false,
+            'created_at' => now(),
+        ]);
+        // 2 motorists remotely: price should STILL NOT be active
+        $this->assertNull(FuelPrice::getLatestValidPrice($this->station->id, 'regular diesel'));
+
+        // 3rd motorist submits exact same 64.00 remotely
+        FuelPrice::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'station_id' => $this->station->id,
+            'fuel_type' => 'regular diesel',
+            'price' => 64.00,
+            'reported_by' => $m3->id,
+            'status' => 'crowdsourced',
+            'is_inside_geofence' => false,
+            'created_at' => now(),
+        ]);
+        // 3 motorists remotely: price IS active and changes the gas station price!
+        $latest = FuelPrice::getLatestValidPrice($this->station->id, 'regular diesel');
+        $this->assertNotNull($latest);
+        $this->assertEquals(64.00, (double)$latest->price);
     }
 }

@@ -16,6 +16,7 @@ import '../services/api_service.dart';
 import '../services/routing_service.dart';
 import '../services/ocr_service.dart';
 import '../widgets/badge_widget.dart';
+import '../widgets/map3d_navigation_view.dart';
 import 'auth_gate.dart';
 import 'location_explorer_screen.dart';
 import 'leaderboard_screen.dart';
@@ -57,6 +58,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
   
   Map<String, dynamic> routingData = {};
   GoogleMapController? _googleMapController;
+  final GlobalKey<Map3DNavigationViewState> _map3dKey = GlobalKey<Map3DNavigationViewState>();
 
   final _vehicleTypeController = TextEditingController();
   final _vehicleEfficiencyController = TextEditingController();
@@ -74,6 +76,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
   DateTime? _lastTelemetryPing;
 
   void _moveCamera(double lat, double lng, {double zoom = 15.0, double bearing = 0.0, double tilt = 0.0}) {
+    // Push to standard GoogleMap controller if still present (non-nav overview)
     if (_googleMapController != null) {
       _googleMapController!.animateCamera(
         CameraUpdate.newCameraPosition(
@@ -86,6 +89,28 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
         ),
       );
     }
+    // Push live position to Map3DNavigationView
+    final state = _map3dKey.currentState;
+    if (state != null && isNavigating) {
+      state.updateCamera(lat, lng, bearing, tilt);
+    }
+  }
+
+  IconData _getManeuverIcon(String text) {
+    final lower = text.toLowerCase();
+    if (lower.contains('left')) {
+      if (lower.contains('slight')) return Icons.turn_slight_left;
+      if (lower.contains('sharp')) return Icons.turn_sharp_left;
+      return Icons.turn_left;
+    }
+    if (lower.contains('right')) {
+      if (lower.contains('slight')) return Icons.turn_slight_right;
+      if (lower.contains('sharp')) return Icons.turn_sharp_right;
+      return Icons.turn_right;
+    }
+    if (lower.contains('roundabout') || lower.contains('rotary')) return Icons.roundabout_left;
+    if (lower.contains('arrive') || lower.contains('destination') || lower.contains('arrived')) return Icons.flag;
+    return Icons.straight;
   }
 
   double _calculateBearing(LatLng start, LatLng end) {
@@ -113,6 +138,10 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
 
   // Navigation Guidance State
   bool isNavigating = false;
+  bool _autoFollowCamera = true;
+  double _navTilt = 60.0; // 60.0 for 3D Perspective, 0.0 for 2D Overhead
+  bool _isMuted = false;
+  double currentBearing = 0.0;
   bool _showAllPrices = false;
   String? _selectedReportStationId;
   GasStation? navigationTarget;
@@ -129,7 +158,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
   final FlutterTts _flutterTts = FlutterTts();
 
   Future<void> _speakInstruction(String text) async {
-    if (text == _lastSpokenInstruction) return;
+    if (_isMuted || text == _lastSpokenInstruction) return;
     _lastSpokenInstruction = text;
     try {
       await _flutterTts.setLanguage('en-US');
@@ -205,9 +234,16 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           LatLng(motoristLat, motoristLng),
           LatLng(targetLat, targetLng),
         ];
-        navigationInstructions = ['Proceed toward gas station'];
+        navigationInstructions = ['Proceed toward gas station (Offline Mode)'];
+        navigationSteps = [
+          RouteStep(
+            instruction: 'Proceed toward gas station',
+            latitude: targetLat,
+            longitude: targetLng,
+          )
+        ];
         currentInstructionIndex = 0;
-        guidanceText = 'Proceed toward gas station';
+        guidanceText = 'Proceed toward gas station (Offline Mode)';
       });
     }
   }
@@ -237,43 +273,62 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     }
   }
 
+  // Tracks last position where route was re-fetched — throttles HTTP calls to every 50m
+  double _lastRouteFetchLat = 0;
+  double _lastRouteFetchLng = 0;
+
   // Helper method for motorist location updates
   Future<void> _updateLocation(double lat, double lng, {double speed = 35.0}) async {
-    setState(() {
-      motoristLat = lat;
-      motoristLng = lng;
-    });
+    // --- single merged setState for position + nav data ---
+    double dist = 0;
+    bool arrived = false;
+    bool insideFence = false;
 
     if (isNavigating && navigationTarget != null) {
-      // Calculate remaining distance in km using Haversine
-      double dist = AppState().getHaversineDistance(
-        motoristLat,
-        motoristLng,
+      dist = AppState().getHaversineDistance(
+        lat, lng,
         navigationTarget!.latitude,
         navigationTarget!.longitude,
       );
+      insideFence = AppState().isPointInPolygon(lat, lng, navigationTarget!.geofencePolygon);
+      arrived = dist < 0.015 || insideFence;
+    }
 
-      setState(() {
+    if (!mounted) return;
+    setState(() {
+      motoristLat = lat;
+      motoristLng = lng;
+      if (isNavigating && navigationTarget != null) {
         remainingDistance = dist;
-      });
-
-      bool isInsideFence = AppState().isPointInPolygon(motoristLat, motoristLng, navigationTarget!.geofencePolygon);
-      if (remainingDistance < 0.015 || isInsideFence) {
-        // Arrived!
-        setState(() {
+        if (arrived) {
           isNavigating = false;
           guidanceText = 'Arrived at destination';
-        });
-        _showArrivalDialog(navigationTarget!);
+        }
+      }
+    });
+
+    if (arrived && navigationTarget != null) {
+      _showArrivalDialog(navigationTarget!);
+      if (mounted) {
         setState(() {
           navigationTarget = null;
           navigationRoutePoints = [];
           navigationInstructions = [];
         });
-      } else {
-        // Fetch new actual road route from updated position
+      }
+      return;
+    }
+
+    if (isNavigating && navigationTarget != null) {
+      // Throttle route re-fetch: only update route when moved > 50m from last fetch
+      final movedSinceLastFetch = AppState().getHaversineDistance(
+        lat, lng, _lastRouteFetchLat, _lastRouteFetchLng) * 1000; // metres
+      if (_lastRouteFetchLat == 0 || movedSinceLastFetch > 50) {
+        _lastRouteFetchLat = lat;
+        _lastRouteFetchLng = lng;
         await _fetchRoadRoute(navigationTarget!.latitude, navigationTarget!.longitude);
-        
+      }
+
         // Proximity-based step tracking
         String newGuidance = guidanceText;
         if (remainingDistance < 0.05) {
@@ -309,11 +364,10 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           await _speakInstruction(newGuidance);
         }
       }
-    }
 
     // Auto-center map if navigating
     if (isNavigating) {
-      double bearing = 0.0;
+      double bearing = currentBearing;
       if (navigationRoutePoints.length >= 2) {
         LatLng nextPoint = navigationRoutePoints[1];
         for (int i = 1; i < navigationRoutePoints.length; i++) {
@@ -329,8 +383,11 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           }
         }
         bearing = _calculateBearing(LatLng(lat, lng), nextPoint);
+        currentBearing = bearing;
       }
-      _moveCamera(lat, lng, zoom: 17.5, bearing: bearing, tilt: 45.0);
+      if (_autoFollowCamera) {
+        _moveCamera(lat, lng, zoom: 18.5, bearing: _navTilt > 0 ? bearing : 0.0, tilt: _navTilt);
+      }
     }
 
     // Fire-and-forget (non-blocking). Throttled separately.
@@ -851,7 +908,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 3, // Update every 3 meters
+        distanceFilter: 10, // Update every 10 metres (less aggressive on emulator)
       ),
     ).listen((Position position) {
       _updateLocation(position.latitude, position.longitude, speed: position.speed);
@@ -923,7 +980,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
 
   bool _isMotoristInGeofence(GasStation station) {
     if (AppState().isSandboxMode) return true;
-    final distKm = AppState().calculateHaversineDistance(
+    final distKm = AppState().getHaversineDistance(
       motoristLat,
       motoristLng,
       station.latitude,
@@ -1264,7 +1321,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
         http.get(Uri.parse('$apiBaseUrl/vehicle-catalog'), headers: AppState().getHeaders()),
         http.get(Uri.parse('$apiBaseUrl/vehicle'), headers: AppState().getHeaders()),
         http.get(Uri.parse('$apiBaseUrl/watchlist'), headers: AppState().getHeaders()),
-      ]);
+      ]).timeout(const Duration(seconds: 4));
 
       final stationsRes = results[0];
       final catalogRes = results[1];
@@ -1300,12 +1357,25 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
       _startLiveSync();
     } catch (e) {
       print('Network error fetching: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Network error: Unable to connect to backend server. Please check your connection.'),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
+      AppState().isSandboxMode = true;
+      stations = AppState().mockStations;
+      catalog = AppState().mockCatalog;
+      vehicle = AppState().mockProfile;
+      _selectedCatalogId = vehicle?.catalogId;
+      _vehicleTypeController.text = vehicle?.vehicleType ?? 'Sedan';
+      _vehicleEfficiencyController.text = vehicle?.fuelEfficiency.toString() ?? '14.5';
+      _vehicleIdlingRateController.text = vehicle?.idlingRate.toString() ?? '1.20';
+      _resetFuelTypeIfIncompatible();
+      _computeSavingsLocally();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Backend server unreachable. Switched to Sandbox / Offline Mode!'),
+            backgroundColor: Colors.amber,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     } finally {
       setState(() {
         _isLoading = false;
@@ -1326,6 +1396,12 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     _isFetchingCalculations = true;
     _lastRoutingCalc = now;
 
+    if (AppState().isSandboxMode) {
+      _computeSavingsLocally();
+      _isFetchingCalculations = false;
+      return;
+    }
+
     try {
       final url = Uri.parse('$apiBaseUrl/gas-stations/routing?'
           'latitude=$motoristLat&'
@@ -1337,15 +1413,18 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           'preferred_brand=$preferredBrand&'
           'price_sensitivity=${priceSensitivity.toLowerCase()}');
       
-      final res = await http.get(url, headers: AppState().getHeaders());
+      final res = await http.get(url, headers: AppState().getHeaders()).timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) {
         setState(() {
           routingData = jsonDecode(res.body);
         });
         _autoSelectOptimalStation();
+      } else {
+        _computeSavingsLocally();
       }
     } catch (e) {
       print('Routing API error $e');
+      _computeSavingsLocally();
     } finally {
       _isFetchingCalculations = false;
     }
@@ -1388,20 +1467,25 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     }
   }
 
-  Future<void> _reportAllPrices(String stationId, Map<String, double> fuelPrices, {File? photoFile}) async {
-    if (AppState().isSandboxMode) {
-      final station = stations.firstWhere((s) => s.id == stationId);
+  Future<bool> _reportAllPrices(String stationId, Map<String, double> fuelPrices, {File? photoFile}) async {
+    final station = stations.firstWhere((s) => s.id == stationId);
+    final isInsideFence = _isMotoristInGeofence(station);
 
-      setState(() {
-        fuelPrices.forEach((type, price) {
-          station.prices[type] = price;
+    if (AppState().isSandboxMode) {
+      if (isInsideFence) {
+        setState(() {
+          fuelPrices.forEach((type, price) {
+            station.prices[type] = price;
+          });
         });
-      });
-      _computeSavingsLocally();
-      return;
+        _computeSavingsLocally();
+      }
+      return isInsideFence;
     }
 
     bool anomalyFlagged = false;
+    bool allInsideFence = true;
+
     for (var entry in fuelPrices.entries) {
       final type = entry.key;
       final price = entry.value;
@@ -1409,6 +1493,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
       final uri = Uri.parse('$apiBaseUrl/gas-stations/$stationId/prices');
       final headers = AppState().getHeaders();
 
+      http.Response res;
       if (photoFile != null) {
         // Upload with real image file as multipart
         final request = http.MultipartRequest('POST', uri);
@@ -1423,16 +1508,10 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           filename: photoFile.path.split(Platform.pathSeparator).last,
         ));
         final streamedRes = await request.send();
-        final res = await http.Response.fromStream(streamedRes);
-        final data = jsonDecode(res.body);
-        if (res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 202) {
-          if (data['anomaly_flagged'] == true) anomalyFlagged = true;
-        } else {
-          throw Exception(data['message'] ?? 'Failed to report price for $type');
-        }
+        res = await http.Response.fromStream(streamedRes);
       } else {
         // Plain JSON POST when no photo
-        final res = await http.post(
+        res = await http.post(
           uri,
           headers: headers,
           body: jsonEncode({
@@ -1442,19 +1521,23 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
             'longitude': motoristLng,
           }),
         );
-        final data = jsonDecode(res.body);
-        if (res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 202) {
-          if (data['anomaly_flagged'] == true) anomalyFlagged = true;
-        } else {
-          throw Exception(data['message'] ?? 'Failed to report price for $type');
-        }
+      }
+
+      final data = jsonDecode(res.body);
+      if (res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 202) {
+        if (data['anomaly_flagged'] == true) anomalyFlagged = true;
+        if (data['is_inside_geofence'] == false) allInsideFence = false;
+      } else {
+        throw Exception(data['message'] ?? 'Failed to report price for $type');
       }
     }
 
-    _fetchData();
+    await _fetchData();
     if (anomalyFlagged) {
       throw Exception('Warning: One or more reported prices were flagged for admin audit review.');
     }
+
+    return isInsideFence && allInsideFence;
   }
 
   Future<void> _saveVehicleProfile(String? catId, String type, double efficiency, {double idlingRate = 1.20}) async {
@@ -1472,27 +1555,41 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
       return;
     }
 
-    final res = await http.post(
-      Uri.parse('$apiBaseUrl/vehicle'),
-      headers: AppState().getHeaders(),
-      body: jsonEncode({
-        'catalog_id': catId,
-        'vehicle_type': type,
-        'fuel_efficiency': efficiency,
-        'idling_rate': idlingRate,
-      }),
-    );
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/vehicle'),
+        headers: AppState().getHeaders(),
+        body: jsonEncode({
+          'catalog_id': catId,
+          'vehicle_type': type,
+          'fuel_efficiency': efficiency,
+          'idling_rate': idlingRate,
+        }),
+      ).timeout(const Duration(seconds: 4));
 
-    if (res.statusCode == 200) {
+      if (res.statusCode == 200) {
+        setState(() {
+          vehicle = VehicleProfile.fromJson(jsonDecode(res.body));
+          _selectedCatalogId = vehicle?.catalogId;
+          _vehicleTypeController.text = vehicle?.vehicleType ?? '';
+          _vehicleEfficiencyController.text = vehicle?.fuelEfficiency.toString() ?? '';
+          _vehicleIdlingRateController.text = vehicle?.idlingRate.toString() ?? '1.20';
+          _resetFuelTypeIfIncompatible();
+        });
+        _fetchRoutingCalculations();
+      }
+    } catch (e) {
+      AppState().isSandboxMode = true;
       setState(() {
-        vehicle = VehicleProfile.fromJson(jsonDecode(res.body));
-        _selectedCatalogId = vehicle?.catalogId;
-        _vehicleTypeController.text = vehicle?.vehicleType ?? '';
-        _vehicleEfficiencyController.text = vehicle?.fuelEfficiency.toString() ?? '';
-        _vehicleIdlingRateController.text = vehicle?.idlingRate.toString() ?? '1.20';
+        vehicle = VehicleProfile(id: 'mock-p', catalogId: catId, vehicleType: type, fuelEfficiency: efficiency, idlingRate: idlingRate);
+        AppState().mockProfile = vehicle;
+        _selectedCatalogId = catId;
+        _vehicleTypeController.text = type;
+        _vehicleEfficiencyController.text = efficiency.toString();
+        _vehicleIdlingRateController.text = idlingRate.toString();
         _resetFuelTypeIfIncompatible();
       });
-      _fetchRoutingCalculations();
+      _computeSavingsLocally();
     }
   }
 
@@ -1611,6 +1708,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     );
   }
 
+  // ignore: unused_element
   Set<Marker> _buildMarkers() {
     final Set<Marker> markerSet = {};
 
@@ -1654,6 +1752,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     return markerSet;
   }
 
+  // ignore: unused_element
   Set<Polyline> _buildPolylines() {
     final Set<Polyline> polylineSet = {};
 
@@ -1681,177 +1780,297 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
         targetData = stationsList.firstWhere((item) => item['station_id'] == navigationTarget!.id);
       } catch (_) {}
 
-      return Column(
+      return Stack(
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: const Color(0xFF131A26),
-            child: const Row(
-              children: [
-                Icon(Icons.navigation, size: 14, color: Colors.greenAccent),
-                SizedBox(width: 8),
-                Text(
-                  'GPS Navigation Mode', 
-                  style: TextStyle(fontSize: 12, color: Colors.greenAccent, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
+          // Photorealistic 3D Navigation Map (gmp-map-3d via WebView)
+          Map3DNavigationView(
+            key: _map3dKey,
+            lat: motoristLat,
+            lng: motoristLng,
+            bearing: currentBearing,
+            tilt: _navTilt,
+            destLat: navigationTarget!.latitude,
+            destLng: navigationTarget!.longitude,
+            routePoints: navigationRoutePoints
+                .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+                .toList(),
           ),
-          Expanded(
-            child: Stack(
-              children: [
-                GoogleMap(
-                  initialCameraPosition: CameraPosition(
-                    target: LatLng(motoristLat, motoristLng),
-                    zoom: 17.5,
-                  ),
-                  mapType: _mapType,
-                  style: null,
-                  onMapCreated: (GoogleMapController controller) {
-                    _googleMapController = controller;
-                  },
-                  markers: _buildMarkers(),
-                  polylines: _buildPolylines(),
-                  myLocationEnabled: false,
-                  myLocationButtonEnabled: false,
-                  zoomControlsEnabled: false,
-                  mapToolbarEnabled: false,
-                ),
-                Positioned(
-                  top: 12,
-                  left: 12,
-                  right: 12,
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
+
+
+          // Top Turn-by-Turn Maneuver HUD Banner
+          Positioned(
+            top: 12,
+            left: 12,
+            right: 12,
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A).withOpacity(0.95),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF10B981).withOpacity(0.5), width: 1.5),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4)),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).cardColor.withOpacity(0.95),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Theme.of(context).primaryColor.withOpacity(0.4)),
-                      boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 6, offset: const Offset(0, 3)),
-                      ],
+                      color: const Color(0xFF10B981).withOpacity(0.2),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFF10B981)),
                     ),
-                    child: Row(
+                    child: Icon(
+                      _getManeuverIcon(guidanceText),
+                      color: const Color(0xFF10B981),
+                      size: 26,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).primaryColor.withOpacity(0.15),
-                            shape: BoxShape.circle,
+                        Text(
+                          guidanceText,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                            height: 1.2,
                           ),
-                          child: Icon(Icons.navigation, color: Theme.of(context).primaryColor, size: 20),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                guidanceText,
-                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Text(
+                              remainingDistance < 1.0
+                                  ? '${(remainingDistance * 1000).toInt()} meters'
+                                  : '${remainingDistance.toStringAsFixed(2)} km remaining',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF10B981),
+                                fontWeight: FontWeight.bold,
                               ),
-                              const SizedBox(height: 2),
-                              Row(
-                                children: [
-                                  Text(
-                                    '${remainingDistance.toStringAsFixed(2)} km remaining',
-                                    style: TextStyle(fontSize: 10, color: Theme.of(context).primaryColor, fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    '|   Est. ${(remainingDistance * 2).toStringAsFixed(0)} mins',
-                                    style: TextStyle(fontSize: 10, color: Colors.grey[700]),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '|   Est. ${(remainingDistance * 2.2).ceil()} mins',
+                              style: const TextStyle(fontSize: 11, color: Colors.grey),
+                            ),
+                          ],
                         ),
                       ],
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-          Container(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardColor,
-              border: const Border(top: BorderSide(color: Colors.black12)),
-            ),
+
+          // Right Map Control Floating Buttons (Perspective, Recenter, Map Mode, Mute)
+          Positioned(
+            top: 110,
+            right: 12,
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${navigationTarget!.name} \u2013 ${navigationTarget!.branch}',
-                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (targetData != null) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: (targetData['net_savings_php'] as num).toDouble() >= 0
-                              ? const Color(0xFF10B981).withOpacity(0.15)
-                              : Colors.redAccent.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          (targetData['net_savings_php'] as num).toDouble() >= 0
-                              ? '+₱${(targetData['net_savings_php'] as num).toStringAsFixed(2)}'
-                              : '-₱${(targetData['net_savings_php'] as num).abs().toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                            color: (targetData['net_savings_php'] as num).toDouble() >= 0
-                                ? const Color(0xFF10B981) : Colors.redAccent,
-                          ),
-                        ),
-                      ),
-                    ]
-                  ],
+                // 3D / 2D Perspective Toggle
+                FloatingActionButton.small(
+                  heroTag: 'perspective_btn',
+                  backgroundColor: const Color(0xFF0F172A).withOpacity(0.9),
+                  foregroundColor: Colors.white,
+                  tooltip: _navTilt > 0 ? 'Switch to 2D Overhead' : 'Switch to 3D Perspective',
+                  onPressed: () {
+                    setState(() {
+                      _navTilt = _navTilt > 0 ? 0.0 : 60.0;
+                      _autoFollowCamera = true;
+                    });
+                    _moveCamera(
+                      motoristLat,
+                      motoristLng,
+                      zoom: 18.5,
+                      bearing: _navTilt > 0 ? currentBearing : 0.0,
+                      tilt: _navTilt,
+                    );
+                  },
+                  child: Text(
+                    _navTilt > 0 ? '3D' : '2D',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF10B981)),
+                  ),
                 ),
                 const SizedBox(height: 8),
-                if (targetData != null) _buildPricesWidget(Map<String, dynamic>.from(targetData)),
-                const SizedBox(height: 4),
-                Text(
-                  '${remainingDistance.toStringAsFixed(2)} km remaining  ·  Queue: ${navigationTarget!.queueCount} cars',
-                  style: const TextStyle(fontSize: 11, color: Colors.grey),
-                  overflow: TextOverflow.ellipsis,
+
+                // Map Style Switcher
+                FloatingActionButton.small(
+                  heroTag: 'maptype_btn',
+                  backgroundColor: const Color(0xFF0F172A).withOpacity(0.9),
+                  foregroundColor: Colors.white,
+                  tooltip: 'Toggle Map Mode',
+                  onPressed: () {
+                    setState(() {
+                      _mapType = _mapType == MapType.normal ? MapType.hybrid : MapType.normal;
+                    });
+                  },
+                  child: Icon(
+                    _mapType == MapType.normal ? Icons.satellite_alt : Icons.map,
+                    size: 18,
+                    color: Colors.white,
+                  ),
                 ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  width: double.infinity,
-                  height: 36,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
+                const SizedBox(height: 8),
+
+                // Audio Mute/Unmute Toggle
+                FloatingActionButton.small(
+                  heroTag: 'mute_btn',
+                  backgroundColor: const Color(0xFF0F172A).withOpacity(0.9),
+                  foregroundColor: _isMuted ? Colors.redAccent : const Color(0xFF10B981),
+                  tooltip: _isMuted ? 'Unmute Audio Guidance' : 'Mute Audio Guidance',
+                  onPressed: () {
+                    setState(() {
+                      _isMuted = !_isMuted;
+                    });
+                    if (_isMuted) {
                       _flutterTts.stop();
-                      setState(() {
-                        isNavigating = false;
-                        navigationTarget = null;
-                        _lastSpokenInstruction = '';
-                      });
-                    },
-                    icon: const Icon(Icons.cancel, size: 14),
-                    label: const Text('Cancel Navigation', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.redAccent,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      elevation: 0,
-                    ),
+                    }
+                  },
+                  child: Icon(
+                    _isMuted ? Icons.volume_off : Icons.volume_up,
+                    size: 18,
                   ),
                 ),
               ],
+            ),
+          ),
+
+          // Floating Recenter Camera Button (when motorist panned the map)
+          if (!_autoFollowCamera)
+            Positioned(
+              bottom: 185,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() => _autoFollowCamera = true);
+                    _moveCamera(
+                      motoristLat,
+                      motoristLng,
+                      zoom: 18.5,
+                      bearing: _navTilt > 0 ? currentBearing : 0.0,
+                      tilt: _navTilt,
+                    );
+                  },
+                  icon: const Icon(Icons.my_location, size: 16),
+                  label: const Text('RECENTER MAP', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    elevation: 6,
+                  ),
+                ),
+              ),
+            ),
+
+          // Bottom Target Station Details & End Navigation Card
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 12, offset: const Offset(0, -4)),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${navigationTarget!.name} \u2013 ${navigationTarget!.branch}',
+                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Queue: ${navigationTarget!.queueCount} cars  ·  Wait: ${navigationTarget!.waitTimeMinutes.toInt()} mins',
+                              style: const TextStyle(fontSize: 11, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (targetData != null) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: (targetData['net_savings_php'] as num).toDouble() >= 0
+                                ? const Color(0xFF10B981).withOpacity(0.2)
+                                : Colors.redAccent.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: (targetData['net_savings_php'] as num).toDouble() >= 0
+                                  ? const Color(0xFF10B981)
+                                  : Colors.redAccent,
+                            ),
+                          ),
+                          child: Text(
+                            (targetData['net_savings_php'] as num).toDouble() >= 0
+                                ? '+₱${(targetData['net_savings_php'] as num).toStringAsFixed(2)}'
+                                : '-₱${(targetData['net_savings_php'] as num).abs().toStringAsFixed(2)}',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              color: (targetData['net_savings_php'] as num).toDouble() >= 0
+                                  ? const Color(0xFF10B981)
+                                  : Colors.redAccent,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 42,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        _flutterTts.stop();
+                        setState(() {
+                          isNavigating = false;
+                          navigationTarget = null;
+                          _lastSpokenInstruction = '';
+                        });
+                      },
+                      icon: const Icon(Icons.stop_circle_outlined, size: 16),
+                      label: const Text('Stop Navigating', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        elevation: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -1974,12 +2193,19 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                 ],
               ),
               const Divider(height: 10, color: Colors.black12),
-              Row(
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 6,
+                runSpacing: 6,
                 children: [
-                  const Icon(Icons.shopping_bag_outlined, size: 14, color: Colors.grey),
-                  const SizedBox(width: 6),
-                  Text('Mode:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey[700])),
-                  const SizedBox(width: 8),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.shopping_bag_outlined, size: 14, color: Colors.grey),
+                      const SizedBox(width: 4),
+                      Text('Mode:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey[700])),
+                    ],
+                  ),
                   GestureDetector(
                     onTap: () {
                       setState(() => purchaseMode = 'liters');
@@ -2004,7 +2230,6 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                       ),
                     ),
                   ),
-                  const SizedBox(width: 4),
                   GestureDetector(
                     onTap: () {
                       setState(() => purchaseMode = 'budget');
@@ -2029,57 +2254,66 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                       ),
                     ),
                   ),
-                  const SizedBox(width: 8),
                   if (purchaseMode == 'liters') ...[
-                    SizedBox(
-                      width: 40,
-                      height: 26,
-                      child: TextField(
-                        controller: _litersController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        textAlign: TextAlign.center,
-                        decoration: InputDecoration(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                          isDense: true,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 44,
+                          height: 26,
+                          child: TextField(
+                            controller: _litersController,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            textAlign: TextAlign.center,
+                            decoration: InputDecoration(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                              isDense: true,
+                            ),
+                            style: TextStyle(fontSize: 12, color: Colors.grey[900], fontWeight: FontWeight.bold),
+                            onChanged: (val) {
+                              double? parsed = double.tryParse(val);
+                              if (parsed != null && parsed > 0) {
+                                setState(() => liters = parsed);
+                                _fetchRoutingCalculations();
+                              }
+                            },
+                          ),
                         ),
-                        style: TextStyle(fontSize: 12, color: Colors.grey[900], fontWeight: FontWeight.bold),
-                        onChanged: (val) {
-                          double? parsed = double.tryParse(val);
-                          if (parsed != null && parsed > 0) {
-                            setState(() => liters = parsed);
-                            _fetchRoutingCalculations();
-                          }
-                        },
-                      ),
+                        const SizedBox(width: 3),
+                        Text('L', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey[700])),
+                      ],
                     ),
-                    const SizedBox(width: 2),
-                    Text('L', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey[700])),
                   ] else ...[
-                    SizedBox(
-                      width: 50,
-                      height: 26,
-                      child: TextField(
-                        controller: _budgetController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        textAlign: TextAlign.center,
-                        decoration: InputDecoration(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                          isDense: true,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 54,
+                          height: 26,
+                          child: TextField(
+                            controller: _budgetController,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            textAlign: TextAlign.center,
+                            decoration: InputDecoration(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                              isDense: true,
+                            ),
+                            style: TextStyle(fontSize: 12, color: Colors.grey[900], fontWeight: FontWeight.bold),
+                            onChanged: (val) {
+                              double? parsed = double.tryParse(val);
+                              if (parsed != null && parsed > 0) {
+                                setState(() => budget = parsed);
+                                _fetchRoutingCalculations();
+                              }
+                            },
+                          ),
                         ),
-                        style: TextStyle(fontSize: 12, color: Colors.grey[900], fontWeight: FontWeight.bold),
-                        onChanged: (val) {
-                          double? parsed = double.tryParse(val);
-                          if (parsed != null && parsed > 0) {
-                            setState(() => budget = parsed);
-                            _fetchRoutingCalculations();
-                          }
-                        },
-                      ),
+                        const SizedBox(width: 3),
+                        Text('₱', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey[700])),
+                      ],
                     ),
-                    const SizedBox(width: 2),
-                    Text('₱', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey[700])),
                   ],
                 ],
               ),
@@ -2262,12 +2496,19 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                               style: TextStyle(fontSize: 10, color: Colors.grey[700], fontStyle: FontStyle.italic),
                             ),
                             const SizedBox(height: 10),
-                            Row(
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                const Icon(Icons.directions_car, size: 12, color: Colors.grey),
-                                const SizedBox(width: 4),
-                                Text('${rawDistance.toStringAsFixed(2)} km detour', style: TextStyle(fontSize: 11, color: Colors.grey[800])),
-                                const SizedBox(width: 14),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.directions_car, size: 12, color: Colors.grey),
+                                    const SizedBox(width: 4),
+                                    Text('${rawDistance.toStringAsFixed(2)} km detour', style: TextStyle(fontSize: 11, color: Colors.grey[800])),
+                                  ],
+                                ),
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                   decoration: BoxDecoration(
@@ -2297,7 +2538,6 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                                     ],
                                   ),
                                 ),
-
                                 InkWell(
                                   onTap: () {
                                     final matches = stations.where((s) => s.id == data['station_id']);
@@ -2326,12 +2566,14 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                             const Divider(color: Colors.black12, height: 20),
                             SizedBox(
                               width: double.infinity,
-                              height: 38,
+                              height: 42,
                               child: ElevatedButton.icon(
                                 onPressed: () async {
                                   final targetStation = stations.firstWhere((s) => s.id == data['station_id']);
                                   setState(() {
                                     isNavigating = true;
+                                    _autoFollowCamera = true;
+                                    _navTilt = 55.0;
                                     navigationTarget = targetStation;
                                     selectedStation = targetStation;
                                     remainingDistance = AppState().getHaversineDistance(
@@ -2343,22 +2585,25 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                                   });
                                   await _fetchRoadRoute(targetStation.latitude, targetStation.longitude);
                                   
-                                  double bearing = 0.0;
                                   if (navigationRoutePoints.length >= 2) {
-                                    bearing = _calculateBearing(LatLng(motoristLat, motoristLng), navigationRoutePoints[1]);
+                                    currentBearing = _calculateBearing(LatLng(motoristLat, motoristLng), navigationRoutePoints[1]);
                                   }
-                                  _moveCamera(motoristLat, motoristLng, zoom: 17.5, bearing: bearing, tilt: 45.0);
+
+                                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                                    _moveCamera(motoristLat, motoristLng, zoom: 18.5, bearing: currentBearing, tilt: 55.0);
+                                  });
+
                                   if (navigationInstructions.isNotEmpty) {
                                     await _speakInstruction(navigationInstructions[0]);
                                   }
                                 },
-                                icon: const Icon(Icons.navigation_rounded, size: 16),
-                                label: const Text('Start Guidance', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                                icon: const Icon(Icons.navigation, size: 18),
+                                label: const Text('Navigate', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF10B981),
                                   foregroundColor: Colors.white,
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  elevation: 2,
                                 ),
                               ),
                             ),
@@ -2390,16 +2635,46 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           DropdownButtonFormField<String>(
             value: _selectedCatalogId,
             isExpanded: true,
-            dropdownColor: const Color(0xFF141C2D),
+            dropdownColor: Theme.of(context).cardColor,
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey[900],
+              fontWeight: FontWeight.w600,
+            ),
             decoration: InputDecoration(
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              filled: true,
+              fillColor: Theme.of(context).cardColor,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
               hintText: 'Select custom or preset template',
+              hintStyle: TextStyle(color: Colors.grey[500]),
             ),
             items: [
-              const DropdownMenuItem(value: null, child: Text('Custom Configuration (Manual Entry)')),
+              DropdownMenuItem(
+                value: null,
+                child: Text(
+                  'Custom Configuration (Manual Entry)',
+                  style: TextStyle(color: Colors.grey[800], fontSize: 13),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
               ...catalog.map((item) => DropdownMenuItem(
                     value: item.id,
-                    child: Text('${item.make} ${item.model} (${item.year}) - ${item.defaultEfficiency} km/L'),
+                    child: Text(
+                      '${item.make} ${item.model} (${item.year}) - ${item.defaultEfficiency} km/L',
+                      style: TextStyle(color: Colors.grey[900], fontSize: 13),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ))
             ],
             onChanged: (val) {
@@ -2416,33 +2691,101 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           ),
           const SizedBox(height: 20),
 
+          // Vehicle Classification Input
           TextField(
             controller: _vehicleTypeController,
+            readOnly: _selectedCatalogId != null,
+            style: TextStyle(
+              fontSize: 14,
+              color: _selectedCatalogId != null ? Colors.grey[700] : Colors.grey[900],
+              fontWeight: FontWeight.w500,
+            ),
             decoration: InputDecoration(
               labelText: 'Vehicle Classification (e.g. Sedan, SUV)',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              filled: true,
+              fillColor: _selectedCatalogId != null ? Colors.grey.withOpacity(0.08) : Theme.of(context).cardColor,
+              suffixIcon: _selectedCatalogId != null ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey) : null,
+              helperText: _selectedCatalogId != null ? 'Locked to preset catalog choice' : null,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
             ),
           ),
           const SizedBox(height: 20),
 
+          // Fuel Efficiency Input
           TextField(
             controller: _vehicleEfficiencyController,
+            readOnly: _selectedCatalogId != null,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: TextStyle(
+              fontSize: 14,
+              color: _selectedCatalogId != null ? Colors.grey[700] : Colors.grey[900],
+              fontWeight: FontWeight.w500,
+            ),
             decoration: InputDecoration(
               labelText: 'Fuel Efficiency (km/L)',
-              helperText: 'A higher value represents a more fuel-efficient vehicle.',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              helperText: _selectedCatalogId != null 
+                  ? 'Locked to preset catalog choice' 
+                  : 'A higher value represents a more fuel-efficient vehicle.',
+              filled: true,
+              fillColor: _selectedCatalogId != null ? Colors.grey.withOpacity(0.08) : Theme.of(context).cardColor,
+              suffixIcon: _selectedCatalogId != null ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey) : null,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
             ),
           ),
           const SizedBox(height: 20),
 
+          // Idling Rate Input
           TextField(
             controller: _vehicleIdlingRateController,
+            readOnly: _selectedCatalogId != null,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: TextStyle(
+              fontSize: 14,
+              color: _selectedCatalogId != null ? Colors.grey[700] : Colors.grey[900],
+              fontWeight: FontWeight.w500,
+            ),
             decoration: InputDecoration(
               labelText: 'Idling Rate (L/h)',
-              helperText: 'Fuel burned per hour while the engine idles (e.g. 0.3 motorcycle, 1.0 sedan, 1.8 SUV/truck).',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              helperText: _selectedCatalogId != null 
+                  ? 'Locked to preset catalog choice' 
+                  : 'Fuel burned per hour while the engine idles (e.g. 0.3 motorcycle, 1.0 sedan, 1.8 SUV/truck).',
+              filled: true,
+              fillColor: _selectedCatalogId != null ? Colors.grey.withOpacity(0.08) : Theme.of(context).cardColor,
+              suffixIcon: _selectedCatalogId != null ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey) : null,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
             ),
           ),
           const SizedBox(height: 35),
@@ -2472,12 +2815,13 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     );
   }
 
-  /// Real OCR: pick image from camera or gallery, run ML Kit text recognition,
+  /// Real OCR: capture image from camera, run ML Kit text recognition,
   /// then auto-populate the price fields with detected prices.
-  Future<void> _pickAndScanPhoto(ImageSource source) async {
+  Future<void> _pickAndScanPhoto([ImageSource source = ImageSource.camera]) async {
     final picker = ImagePicker();
     final XFile? picked = await picker.pickImage(
-      source: source,
+      source: ImageSource.camera,
+      preferredCameraDevice: CameraDevice.rear,
       imageQuality: 90,
       maxWidth: 1920,
     );
@@ -2701,38 +3045,22 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                   ],
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: _isOcrScanning ? null : () => _pickAndScanPhoto(ImageSource.camera),
-                        icon: _isOcrScanning
-                            ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                            : const Icon(Icons.photo_camera, size: 14),
-                        label: Text(_isOcrScanning ? 'Scanning…' : 'Take Photo', style: const TextStyle(fontSize: 12)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Theme.of(context).primaryColor,
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                      ),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isOcrScanning ? null : () => _pickAndScanPhoto(ImageSource.camera),
+                    icon: _isOcrScanning
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.photo_camera, size: 16),
+                    label: Text(_isOcrScanning ? 'Scanning…' : 'Take Photo with Camera', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).primaryColor,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: _isOcrScanning ? null : () => _pickAndScanPhoto(ImageSource.gallery),
-                        icon: const Icon(Icons.photo_library, size: 14),
-                        label: const Text('Choose Gallery', style: TextStyle(fontSize: 12)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.grey[300],
-                          foregroundColor: Colors.grey[800],
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
                 if (ocrPhotoFile != null) ...[
                   const SizedBox(height: 10),
@@ -2809,48 +3137,102 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                 if (_selectedReportStationId == null) return;
                 final targetStation = stations.firstWhere((s) => s.id == _selectedReportStationId);
 
-                if (!_isMotoristInGeofence(targetStation)) {
-                  _showGeofenceRestrictionDialog(targetStation, 'price reporting');
-                  return;
-                }
-
                 double? p91 = double.tryParse(_report91Controller.text);
                 double? p95 = double.tryParse(_report95Controller.text);
                 double? pReg = double.tryParse(_reportRegDslController.text);
                 double? pPrem = double.tryParse(_reportPremDslController.text);
 
+                final origP91 = targetStation.prices['regular unleaded (91)'];
+                final origP95 = targetStation.prices['premium unleaded(95)'];
+                final origRegDsl = targetStation.prices['regular diesel'];
+                final origPremDsl = targetStation.prices['premium diesel'];
 
-                if (p91 == null || p95 == null || pReg == null || pPrem == null) {
+                final Map<String, double> pricesToSubmit = {};
+
+                if (p91 != null && (origP91 == null || (p91 - origP91).abs() > 0.001)) {
+                  pricesToSubmit['regular unleaded (91)'] = p91;
+                }
+                if (p95 != null && (origP95 == null || (p95 - origP95).abs() > 0.001)) {
+                  pricesToSubmit['premium unleaded(95)'] = p95;
+                }
+                if (pReg != null && (origRegDsl == null || (pReg - origRegDsl).abs() > 0.001)) {
+                  pricesToSubmit['regular diesel'] = pReg;
+                }
+                if (pPrem != null && (origPremDsl == null || (pPrem - origPremDsl).abs() > 0.001)) {
+                  pricesToSubmit['premium diesel'] = pPrem;
+                }
+
+                if (pricesToSubmit.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Please enter valid numeric prices for all variants.'), backgroundColor: Colors.amber),
+                    const SnackBar(
+                      content: Text('No price modifications detected. Please edit at least one fuel price before submitting.'),
+                      backgroundColor: Colors.amber,
+                    ),
                   );
                   return;
                 }
 
-                if (_selectedReportStationId == null) return;
-
                 try {
-                  await _reportAllPrices(
+                  final isGeofenced = await _reportAllPrices(
                     _selectedReportStationId!,
-                    {
-                      'regular unleaded (91)': p91,
-                      'premium unleaded(95)': p95,
-                      'regular diesel': pReg,
-                      'premium diesel': pPrem,
-                    },
+                    pricesToSubmit,
                     photoFile: ocrPhotoFile,
                   );
                   setState(() {
                     ocrPhotoFile = null;
                     ocrScanResult = null;
                   });
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('All prices updated and reported successfully!'), backgroundColor: Colors.green),
-                  );
+
+                  if (!isGeofenced) {
+                    if (mounted) {
+                      showDialog(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          backgroundColor: Theme.of(context).cardColor,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          title: Row(
+                            children: const [
+                              Icon(Icons.hourglass_top_rounded, color: Colors.blueAccent, size: 26),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Recorded Successfully',
+                                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
+                          ),
+                          content: const Text(
+                            'Your price report has been recorded successfully. Since you are submitting away from the station geofence, the station prices will remain unchanged until 3 or more motorists submit matching prices.',
+                            style: TextStyle(fontSize: 13, height: 1.4),
+                          ),
+                          actions: [
+                            ElevatedButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blueAccent,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              child: const Text('Understood', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                  } else {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('All prices updated and reported successfully!'), backgroundColor: Colors.green),
+                      );
+                    }
+                  }
                 } catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(e.toString().replaceAll('Exception: ', '')), backgroundColor: Colors.amber[800]),
-                  );
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(e.toString().replaceAll('Exception: ', '')), backgroundColor: Colors.amber[800]),
+                    );
+                  }
                 }
               },
               icon: const Icon(Icons.check_circle_outline),

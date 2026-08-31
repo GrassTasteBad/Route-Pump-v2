@@ -22,12 +22,15 @@ class FuelPrice extends Model
         'created_at',
         'image_path',
         'ocr_verified',
+        'is_inside_geofence',
     ];
 
     public $timestamps = false; // we use custom created_at/timestamps if we want, or default database timestamp. But we have created_at and let's set updated_at as well or let Laravel handle it.
     
     protected $casts = [
         'price' => 'float',
+        'is_inside_geofence' => 'boolean',
+        'created_at' => 'datetime',
     ];
     
     // Let's configure custom timestamps or let Laravel use its defaults. The migration has $table->timestamps(). So we should keep default timestamps or manage them.
@@ -75,17 +78,19 @@ class FuelPrice extends Model
                 if ($priceRecord->ocr_verified) {
                     return true;
                 }
-                if ($priceRecord->reporter && $priceRecord->reporter->trust_score >= 80) {
+                
+                // Motorist submitted within range of geofence: accepts and updates station price IMMEDIATELY!
+                if ($priceRecord->is_inside_geofence) {
                     return true;
                 }
-                
-                // Crowdsourced: check for at least 1 supporting submission from another user within 3 days
-                $supportingCount = self::where('station_id', $priceRecord->station_id)
+
+                // Motorist submitted away from geofence (remotely):
+                // Only accepts and changes station price if 3 or more distinct motorists have submitted the exact same price far from geofence
+                $remoteDistinctCount = self::where('station_id', $priceRecord->station_id)
                     ->where('fuel_type', $priceRecord->fuel_type)
                     ->where('price', $priceRecord->price)
-                    ->where('id', '!=', $priceRecord->id)
-                    ->where('reported_by', '!=', $priceRecord->reported_by)
                     ->where('status', 'crowdsourced')
+                    ->where('is_inside_geofence', false)
                     ->whereBetween('created_at', [
                         \Carbon\Carbon::parse($priceRecord->created_at)->subDays(3),
                         \Carbon\Carbon::parse($priceRecord->created_at)->addDays(3)
@@ -93,7 +98,7 @@ class FuelPrice extends Model
                     ->distinct('reported_by')
                     ->count('reported_by');
                     
-                return $supportingCount >= 1;
+                return $remoteDistinctCount >= 3;
             });
     }
 }

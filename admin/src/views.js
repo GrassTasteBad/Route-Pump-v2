@@ -9,12 +9,14 @@ export async function loadAllData() {
     const stations = await apiFetch('/gas-stations');
     const catalog = await apiFetch('/vehicle-catalog');
     const anomalies = await apiFetch('/anomalies');
+    const submissions = await apiFetch('/price-submissions');
     const users = await apiFetch('/users');
     const analytics = await apiFetch('/analytics/dashboard');
 
     state.stations = stations;
     state.catalog = catalog;
     state.anomalies = anomalies;
+    state.submissions = submissions;
     state.users = users;
     state.analytics = analytics;
 
@@ -22,6 +24,7 @@ export async function loadAllData() {
     updateStationsTable();
     updateCatalogTable();
     updateAnomaliesTable();
+    updateSubmissionsTable();
     updateUsersTable();
     updateUserStationDropdown();
     updateAnalyticsUI();
@@ -34,9 +37,14 @@ export function updateDashboardUI() {
   const stationsEl = document.getElementById('stat-stations');
   const vehiclesEl = document.getElementById('stat-vehicles');
   const anomaliesEl = document.getElementById('stat-anomalies');
+  const queuedVehiclesEl = document.getElementById('stat-queued-vehicles');
   
   if (stationsEl) stationsEl.innerText = state.stations.length;
   if (vehiclesEl) vehiclesEl.innerText = state.catalog.length;
+  if (queuedVehiclesEl) {
+    const totalQueued = state.stations.reduce((sum, s) => sum + (s.queue_count || 0), 0);
+    queuedVehiclesEl.innerText = `${totalQueued} Vehicles`;
+  }
 
   const pendingAnomalies = state.anomalies.filter(a => a.status === 'pending');
   if (anomaliesEl) anomaliesEl.innerText = pendingAnomalies.length;
@@ -121,7 +129,14 @@ export function updateStationsTable() {
       statusBadge = `<span class="badge badge-warning">Maintenance</span>`;
     } else if (station.status === 'out_of_stock') {
       statusBadge = `<span class="badge badge-danger">Out of Fuel</span>`;
+    } else if (station.status === 'inactive' || station.status === 'deactivated') {
+      statusBadge = `<span class="badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3);">Inactive</span>`;
     }
+
+    const isActive = station.status === 'active';
+    const actionBtn = isActive
+      ? `<button class="btn-secondary btn-sm-toggle-station" data-id="${station.id}" data-action="deactivate" style="padding: 4px 10px; font-size: 11.5px; color: var(--accent-rose); border-color: rgba(244, 63, 94, 0.35);"><i class="fa-solid fa-power-off"></i> Deactivate</button>`
+      : `<button class="btn-primary btn-sm-toggle-station" data-id="${station.id}" data-action="activate" style="padding: 4px 10px; font-size: 11.5px; background: var(--accent-emerald); border-color: var(--accent-emerald);"><i class="fa-solid fa-circle-check"></i> Activate</button>`;
 
     const tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
@@ -135,13 +150,13 @@ export function updateStationsTable() {
       <td>₱${station.prices['regular diesel'] ? Number(station.prices['regular diesel']).toFixed(2) : '-'}</td>
       <td>₱${station.prices['premium diesel'] ? Number(station.prices['premium diesel']).toFixed(2) : '-'}</td>
       <td>
-        <button class="btn-danger btn-sm-delete" data-id="${station.id}" style="padding: 4px 8px; font-size: 11px;"><i class="fa-solid fa-trash-can"></i> Delete</button>
+        ${actionBtn}
       </td>
     `;
 
     // Row clicks zoom map to station
     tr.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-danger')) return;
+      if (e.target.closest('.btn-sm-toggle-station')) return;
       if (state.map) {
         state.map.setCenter({ lat: station.latitude, lng: station.longitude });
         state.map.setZoom(16);
@@ -151,15 +166,22 @@ export function updateStationsTable() {
     tableBody.appendChild(tr);
   });
 
-  // Delete Action bindings
-  document.querySelectorAll('.btn-sm-delete').forEach(btn => {
+  // Activate / Deactivate Action bindings
+  document.querySelectorAll('.btn-sm-toggle-station').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const id = btn.getAttribute('data-id');
-      if (confirm('Are you sure you want to delete this gas station? This will remove all associated prices and telemetry.')) {
+      const action = btn.getAttribute('data-action');
+      const newStatus = action === 'activate' ? 'active' : 'inactive';
+      const actionWord = action === 'activate' ? 'activate' : 'deactivate';
+
+      if (confirm(`Are you sure you want to ${actionWord} this gas station?`)) {
         try {
-          await apiFetch(`/gas-stations/${id}`, { method: 'DELETE' });
-          showGlobalAlert('Gas station deleted successfully!');
+          await apiFetch(`/gas-stations/${id}/status`, {
+            method: 'POST',
+            body: JSON.stringify({ status: newStatus }),
+          });
+          showGlobalAlert(`Gas station ${action === 'activate' ? 'activated' : 'deactivated'} successfully!`);
           loadAllData();
         } catch (err) {
           showGlobalAlert(err.message, 'error');
@@ -523,22 +545,14 @@ export function updateAnomaliesTable() {
 
     // Status Badge & Action Buttons
     let statusBadge = '<span class="badge badge-warning"><i class="fa-solid fa-clock"></i> Pending Review</span>';
-    let actionButtons = `
+    const actionButtons = `
       <button class="btn-inspect btn-anomaly-inspect" data-id="${log.id}"><i class="fa-solid fa-eye"></i> Audit</button>
-      <button class="btn-success btn-anomaly-action" data-action="resolve" data-id="${log.id}"><i class="fa-solid fa-check"></i></button>
-      <button class="btn-danger btn-anomaly-action" data-action="dismiss" data-id="${log.id}"><i class="fa-solid fa-xmark"></i></button>
     `;
 
     if (log.status === 'resolved') {
       statusBadge = '<span class="badge badge-success"><i class="fa-solid fa-check"></i> Approved</span>';
-      actionButtons = `
-        <button class="btn-inspect btn-anomaly-inspect" data-id="${log.id}"><i class="fa-solid fa-eye"></i> Inspect</button>
-      `;
     } else if (log.status === 'dismissed') {
       statusBadge = '<span class="badge badge-danger"><i class="fa-solid fa-xmark"></i> Rejected</span>';
-      actionButtons = `
-        <button class="btn-inspect btn-anomaly-inspect" data-id="${log.id}"><i class="fa-solid fa-eye"></i> Inspect</button>
-      `;
     }
 
     const tr = document.createElement('tr');
@@ -732,7 +746,7 @@ export function updateUsersTable() {
     if (isSelf) {
       actionBtn = `<span style="color:var(--text-secondary);font-size:12px;">Current Session</span>`;
     } else if (user.status === 'deactivated') {
-      actionBtn = `<span style="color:var(--text-secondary);font-size:12px;font-style:italic;">Deactivated</span>`;
+      actionBtn = `<button class="btn-success btn-user-activate" data-id="${user.id}" style="padding:4px 8px;font-size:11px;"><i class="fa-solid fa-user-check"></i> Activate</button>`;
     } else {
       actionBtn = `<button class="btn-danger btn-user-deactivate" data-id="${user.id}" style="padding:4px 8px;font-size:11px;"><i class="fa-solid fa-ban"></i> Deactivate</button>`;
     }
@@ -758,6 +772,22 @@ export function updateUsersTable() {
         try {
           await apiFetch(`/users/${id}`, { method: 'DELETE' });
           showGlobalAlert('User account deactivated successfully!');
+          loadAllData();
+        } catch (err) {
+          showGlobalAlert(err.message, 'error');
+        }
+      }
+    });
+  });
+
+  // Activate action bindings
+  document.querySelectorAll('.btn-user-activate').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id');
+      if (confirm('Reactivate this user account? The user will be able to log in again.')) {
+        try {
+          await apiFetch(`/users/${id}/activate`, { method: 'POST' });
+          showGlobalAlert('User account activated successfully!');
           loadAllData();
         } catch (err) {
           showGlobalAlert(err.message, 'error');
@@ -866,4 +896,142 @@ export function updateAnalyticsUI() {
       trendsTableBody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">No historical monthly price trends available.</td></tr>';
     }
   }
+}
+
+let submissionsSearchQuery = '';
+let submissionsStatusFilter = '';
+let submissionsFuelFilter = '';
+
+export function updateSubmissionsTable() {
+  const tableBody = document.getElementById('submissions-table-body');
+  if (!tableBody) return;
+
+  // Bind Search & Filter Input Listeners once
+  const subSearchInput = document.getElementById('submissions-search');
+  if (subSearchInput && !subSearchInput.dataset.bound) {
+    subSearchInput.dataset.bound = 'true';
+    subSearchInput.addEventListener('input', (e) => {
+      submissionsSearchQuery = e.target.value;
+      updateSubmissionsTable();
+    });
+  }
+
+  const subStatusFilter = document.getElementById('submissions-filter-status');
+  if (subStatusFilter && !subStatusFilter.dataset.bound) {
+    subStatusFilter.dataset.bound = 'true';
+    subStatusFilter.addEventListener('change', (e) => {
+      submissionsStatusFilter = e.target.value;
+      updateSubmissionsTable();
+    });
+  }
+
+  const subFuelFilter = document.getElementById('submissions-filter-fuel');
+  if (subFuelFilter && !subFuelFilter.dataset.bound) {
+    subFuelFilter.dataset.bound = 'true';
+    subFuelFilter.addEventListener('change', (e) => {
+      submissionsFuelFilter = e.target.value;
+      updateSubmissionsTable();
+    });
+  }
+
+  const refreshSubBtn = document.getElementById('refresh-submissions-btn');
+  if (refreshSubBtn && !refreshSubBtn.dataset.bound) {
+    refreshSubBtn.dataset.bound = 'true';
+    refreshSubBtn.addEventListener('click', () => {
+      loadAllData();
+    });
+  }
+
+  const submissions = state.submissions || [];
+
+  // Metrics
+  const totalCount = submissions.length;
+  const verifiedCount = submissions.filter(s => s.calculated_status === 'verified').length;
+  const pendingCount = submissions.filter(s => s.calculated_status === 'pending').length;
+  const rejectedCount = submissions.filter(s => s.calculated_status === 'rejected').length;
+
+  const statTotal = document.getElementById('sub-stat-total');
+  const statVerified = document.getElementById('sub-stat-verified');
+  const statPending = document.getElementById('sub-stat-pending');
+  const statRejected = document.getElementById('sub-stat-rejected');
+
+  if (statTotal) statTotal.innerText = totalCount;
+  if (statVerified) statVerified.innerText = verifiedCount;
+  if (statPending) statPending.innerText = pendingCount;
+  if (statRejected) statRejected.innerText = rejectedCount;
+
+  // Filter Submissions
+  const filtered = submissions.filter(sub => {
+    const q = submissionsSearchQuery.toLowerCase();
+    const matchesSearch = !q ||
+      (sub.station_name && sub.station_name.toLowerCase().includes(q)) ||
+      (sub.station_branch && sub.station_branch.toLowerCase().includes(q)) ||
+      (sub.reporter_name && sub.reporter_name.toLowerCase().includes(q)) ||
+      (sub.fuel_type && sub.fuel_type.toLowerCase().includes(q));
+
+    const matchesStatus = !submissionsStatusFilter || sub.calculated_status === submissionsStatusFilter;
+    const matchesFuel = !submissionsFuelFilter || sub.fuel_type === submissionsFuelFilter;
+
+    return matchesSearch && matchesStatus && matchesFuel;
+  });
+
+  const emptyStateEl = document.getElementById('submissions-empty-state');
+  if (filtered.length === 0) {
+    tableBody.innerHTML = '';
+    if (emptyStateEl) emptyStateEl.style.display = 'block';
+    return;
+  } else {
+    if (emptyStateEl) emptyStateEl.style.display = 'none';
+  }
+
+  tableBody.innerHTML = '';
+
+  filtered.forEach(sub => {
+    const trustScore = sub.trust_score ?? 50;
+    let trustPill = '<span class="trust-pill-high"><i class="fa-solid fa-star"></i> ' + trustScore + ' Trust</span>';
+    if (trustScore < 50) {
+      trustPill = `<span class="trust-pill-low"><i class="fa-solid fa-circle-exclamation"></i> ${trustScore} Low Risk</span>`;
+    } else if (trustScore < 80) {
+      trustPill = `<span class="trust-pill-med"><i class="fa-solid fa-shield-halved"></i> ${trustScore} Med Trust</span>`;
+    }
+
+    let locationBadge = '<span class="badge badge-warning"><i class="fa-solid fa-tower-cell"></i> Remote Submission</span>';
+    if (sub.is_inside_geofence) {
+      locationBadge = '<span class="badge badge-success"><i class="fa-solid fa-location-dot"></i> Geofence (150m)</span>';
+    }
+    if (sub.ocr_verified) {
+      locationBadge += ' <span class="method-badge-ocr"><i class="fa-solid fa-camera"></i> OCR Verified</span>';
+    }
+
+    let statusBadge = '<span class="badge badge-warning"><i class="fa-solid fa-clock"></i> Pending (Remote)</span>';
+    if (sub.calculated_status === 'approved') {
+      statusBadge = '<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> Approved (Admin Decision)</span>';
+    } else if (sub.calculated_status === 'rejected') {
+      statusBadge = '<span class="badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> Rejected (Admin Decision)</span>';
+    } else if (sub.calculated_status === 'verified') {
+      statusBadge = '<span class="badge badge-success"><i class="fa-solid fa-shield-check"></i> Verified (Geofence / OCR)</span>';
+    }
+
+    const formattedDate = new Date(sub.created_at || Date.now()).toLocaleTimeString('en-PH', {
+      hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric'
+    });
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>
+        <div><strong>${sub.station_name}</strong></div>
+        <div style="color: var(--text-secondary); font-size: 12.5px;"><i class="fa-solid fa-location-dot" style="color: var(--accent-cyan);"></i> ${sub.station_branch}</div>
+      </td>
+      <td><span class="badge badge-cyan" style="text-transform: capitalize;">${sub.fuel_type}</span></td>
+      <td><div style="font-size: 15px; font-weight: 700; color: var(--text-primary);">₱${Number(sub.price).toFixed(2)}</div></td>
+      <td>
+        <div><strong>${sub.reporter_name}</strong></div>
+        <div style="margin-top: 2px;">${trustPill}</div>
+      </td>
+      <td><div>${locationBadge}</div></td>
+      <td><div style="font-size: 12.5px; color: var(--text-secondary);">${formattedDate}</div></td>
+      <td>${statusBadge}</td>
+    `;
+    tableBody.appendChild(tr);
+  });
 }

@@ -6,6 +6,7 @@ export const state = {
   stations: [],
   catalog: [],
   anomalies: [],
+  submissions: [],
   users: [],
   map: null,
   mapMarkers: [],

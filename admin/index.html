@@ -8,7 +8,7 @@
   <!-- Google Fonts & Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- Google Maps JavaScript API -->
-  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAGMiQQ_bqlwYd8vC6JP0Z3d7phZSQM8eo&loading=async&callback=Function.prototype" async defer></script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAGMiQQ_bqlwYd8vC6JP0Z3d7phZSQM8eo&v=weekly&loading=async&callback=Function.prototype" async defer></script>
 </head>
 <body>
 
@@ -61,7 +61,10 @@
           <a href="#"><i class="fa-solid fa-car"></i> Vehicle Catalog</a>
         </li>
         <li class="sidebar-menu-item" data-page="anomalies">
-          <a href="#"><i class="fa-solid fa-circle-exclamation"></i> Price Anomalies <span id="anomaly-badge-count" class="badge badge-danger" style="display:none; margin-left: 5px;">0</span></a>
+          <a href="#"><i class="fa-solid fa-flag"></i> Reports <span id="anomaly-badge-count" class="badge badge-danger" style="display:none; margin-left: 5px;">0</span></a>
+        </li>
+        <li class="sidebar-menu-item" data-page="price-submissions">
+          <a href="#"><i class="fa-solid fa-receipt"></i> Submitted Prices</a>
         </li>
         <li class="sidebar-menu-item" data-page="users">
           <a href="#"><i class="fa-solid fa-users"></i> User Accounts</a>
@@ -108,27 +111,27 @@
             <i class="fa-solid fa-car-side stat-card-icon"></i>
           </div>
           <div class="stat-card glass-panel">
-            <div class="stat-card-title">Pending Anomalies</div>
+            <div class="stat-card-title">Pending Reports</div>
             <div class="stat-card-value" id="stat-anomalies" style="color: var(--accent-rose);">0</div>
-            <i class="fa-solid fa-triangle-exclamation stat-card-icon" style="color: var(--accent-rose);"></i>
+            <i class="fa-solid fa-flag stat-card-icon" style="color: var(--accent-rose);"></i>
           </div>
           <div class="stat-card glass-panel">
-            <div class="stat-card-title">Davao Market Price (Unl)</div>
-            <div class="stat-card-value" id="stat-unl-avg">₱0.00</div>
-            <i class="fa-solid fa-tags stat-card-icon"></i>
+            <div class="stat-card-title">Live Queued Vehicles</div>
+            <div class="stat-card-value" id="stat-queued-vehicles" style="color: var(--accent-cyan);">0</div>
+            <i class="fa-solid fa-car-on stat-card-icon" style="color: var(--accent-cyan);"></i>
           </div>
         </div>
 
         <div class="content-grid">
           <!-- Active Station Queues -->
           <div class="glass-panel table-panel">
-            <h3 class="table-title" style="margin-bottom: 20px;"><i class="fa-solid fa-people-line" style="color: var(--accent-cyan);"></i> Live Station wait times (Participatory Q(t))</h3>
+            <h3 class="table-title" style="margin-bottom: 20px;"><i class="fa-solid fa-people-line" style="color: var(--accent-cyan);"></i> Live Station Wait Times</h3>
             <table class="custom-table">
               <thead>
                 <tr>
                   <th>Station</th>
                   <th>Branch</th>
-                  <th>Active Vehicles (Q)</th>
+                  <th>Active Vehicles</th>
                   <th>Est. Wait Time</th>
                   <th>Status</th>
                 </tr>
@@ -259,11 +262,11 @@
         </div>
       </section>
 
-      <!-- MANUAL REPORT QUEUE / PRICE ANOMALIES PAGE -->
+      <!-- MANUAL REPORT QUEUE / PRICE REPORTS PAGE -->
       <section id="anomalies-page" class="page-view" style="display: none;">
         <div class="page-header">
           <div>
-            <h2 class="page-title">Manual Report Queue & Anomaly Hub</h2>
+            <h2 class="page-title">Price Reports Hub</h2>
             <p class="page-subtitle">Moderate crowdsourced prices, verify OCR proof, and update reporter trust ratings</p>
           </div>
           <div class="page-header-actions">
@@ -361,6 +364,96 @@
               <button class="btn-secondary" id="anomalies-prev-btn" style="padding: 6px 12px; font-size: 12.5px;"><i class="fa-solid fa-chevron-left"></i> Previous</button>
               <button class="btn-secondary" id="anomalies-next-btn" style="padding: 6px 12px; font-size: 12.5px;">Next <i class="fa-solid fa-chevron-right"></i></button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- MOTORIST PRICE SUBMISSIONS SUMMARY PAGE -->
+      <section id="price-submissions-page" class="page-view" style="display: none;">
+        <div class="page-header">
+          <div>
+            <h2 class="page-title">Motorist Price Submissions Summary</h2>
+            <p class="page-subtitle">Track every fuel price submitted by motorists, including pending remote entries and verified geofence reports</p>
+          </div>
+          <div class="page-header-actions">
+            <button class="btn-secondary" id="refresh-submissions-btn" style="width: auto;"><i class="fa-solid fa-rotate"></i> Refresh List</button>
+          </div>
+        </div>
+
+        <!-- Metric Overview Grid -->
+        <div class="stats-grid" style="margin-bottom: 24px;">
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Total Submissions</div>
+            <div class="stat-card-value" id="sub-stat-total">0</div>
+            <i class="fa-solid fa-receipt stat-card-icon"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Geofence Verified</div>
+            <div class="stat-card-value" id="sub-stat-verified" style="color: var(--accent-emerald);">0</div>
+            <i class="fa-solid fa-location-dot stat-card-icon" style="color: var(--accent-emerald);"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Pending Remote</div>
+            <div class="stat-card-value" id="sub-stat-pending" style="color: var(--accent-amber);">0</div>
+            <i class="fa-solid fa-hourglass-half stat-card-icon" style="color: var(--accent-amber);"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">Rejected / Anomalies</div>
+            <div class="stat-card-value" id="sub-stat-rejected" style="color: var(--accent-rose);">0</div>
+            <i class="fa-solid fa-ban stat-card-icon" style="color: var(--accent-rose);"></i>
+          </div>
+        </div>
+
+        <!-- Search & Filter Controls -->
+        <div class="search-filter-row" style="margin-bottom: 20px; display: flex; gap: 15px; align-items: center; width: 100%;">
+          <div style="flex-grow: 1; position: relative;">
+            <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 14px; top: 14px; color: var(--text-secondary);"></i>
+            <input type="text" id="submissions-search" class="form-input" placeholder="Search by station, branch, reporter, or fuel type..." style="padding-left: 40px; width: 100%;">
+          </div>
+          <div style="width: 180px; flex-shrink: 0;">
+            <select id="submissions-filter-status" class="form-input" style="width: 100%;">
+              <option value="">All Statuses</option>
+              <option value="verified">Verified (Geofence)</option>
+              <option value="pending">Pending (Remote)</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div style="width: 180px; flex-shrink: 0;">
+            <select id="submissions-filter-fuel" class="form-input" style="width: 100%;">
+              <option value="">All Fuel Types</option>
+              <option value="regular unleaded (91)">Unleaded (91)</option>
+              <option value="premium unleaded(95)">Unleaded (95)</option>
+              <option value="regular diesel">Regular Diesel</option>
+              <option value="premium diesel">Premium Diesel</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Main Submissions Table -->
+        <div class="glass-panel table-panel">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Station & Branch</th>
+                <th>Fuel Variant</th>
+                <th>Submitted Price</th>
+                <th>Reporter & Trust Score</th>
+                <th>Submission Location / Proof</th>
+                <th>Submitted At</th>
+                <th>Status / Admin Decision</th>
+              </tr>
+            </thead>
+            <tbody id="submissions-table-body">
+              <!-- JS Loaded -->
+            </tbody>
+          </table>
+
+          <!-- Empty State -->
+          <div id="submissions-empty-state" class="empty-queue-state" style="display: none;">
+            <i class="fa-solid fa-receipt empty-queue-icon"></i>
+            <div class="empty-queue-title">No Price Submissions Found</div>
+            <div class="empty-queue-desc">There are no price submissions matching your selected search or filter criteria.</div>
           </div>
         </div>
       </section>

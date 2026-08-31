@@ -399,9 +399,15 @@ class _LocationExplorerScreenState extends State<LocationExplorerScreen> {
                   onMapCreated: (c) => _mapController = c,
                   markers: _buildMarkers(),
                   onTap: _onMapTap,
-                  myLocationButtonEnabled: false,
-                  zoomControlsEnabled: false,
-                  mapToolbarEnabled: false,
+                  myLocationEnabled: true,
+                  myLocationButtonEnabled: true,
+                  trafficEnabled: true,
+                  buildingsEnabled: true,
+                  compassEnabled: true,
+                  rotateGesturesEnabled: true,
+                  tiltGesturesEnabled: true,
+                  zoomControlsEnabled: true,
+                  mapToolbarEnabled: true,
                 ),
 
                 // Collapse / expand toggle
@@ -543,78 +549,100 @@ class _LocationExplorerScreenState extends State<LocationExplorerScreen> {
                     ),
                   ],
                 ),
-                const Divider(height: 10, color: Colors.black12),
+              const Divider(height: 10, color: Colors.black12),
                 // Row 2: Mode + Amount
-                Row(
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 6,
+                  runSpacing: 6,
                   children: [
-                    const Icon(Icons.shopping_bag_outlined, size: 13, color: Colors.grey),
-                    const SizedBox(width: 4),
-                    Text('Mode:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[700])),
-                    const SizedBox(width: 6),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.shopping_bag_outlined, size: 13, color: Colors.grey),
+                        const SizedBox(width: 4),
+                        Text('Mode:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                      ],
+                    ),
                     _buildFilterChip('Liters', _purchaseMode == 'liters', () {
                       setState(() => _purchaseMode = 'liters');
                       _computeFromPinnedLocation();
                     }),
-                    const SizedBox(width: 4),
                     _buildFilterChip('Budget', _purchaseMode == 'budget', () {
                       setState(() => _purchaseMode = 'budget');
                       _computeFromPinnedLocation();
                     }),
-                    const SizedBox(width: 8),
                     if (_purchaseMode == 'liters') ...[
-                      SizedBox(
-                        width: 40,
-                        height: 26,
-                        child: TextField(
-                          controller: _litersController,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          textAlign: TextAlign.center,
-                          decoration: InputDecoration(
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                            isDense: true,
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 44,
+                            height: 26,
+                            child: TextField(
+                              controller: _litersController,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              textAlign: TextAlign.center,
+                              decoration: InputDecoration(
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                                isDense: true,
+                              ),
+                              style: TextStyle(fontSize: 12, color: isDark ? Colors.white : Colors.grey[900], fontWeight: FontWeight.bold),
+                              onChanged: (val) {
+                                final p = double.tryParse(val);
+                                if (p != null && p > 0) {
+                                  setState(() => _liters = p);
+                                  _computeFromPinnedLocation();
+                                }
+                              },
+                            ),
                           ),
-                          style: TextStyle(fontSize: 12, color: isDark ? Colors.white : Colors.grey[900], fontWeight: FontWeight.bold),
-                          onChanged: (val) {
-                            final p = double.tryParse(val);
-                            if (p != null && p > 0) {
-                              setState(() => _liters = p);
-                              _computeFromPinnedLocation();
-                            }
-                          },
-                        ),
+                          const SizedBox(width: 3),
+                          Text('L', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                        ],
                       ),
-                      const SizedBox(width: 2),
-                      Text('L', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[700])),
                     ] else ...[
-                      SizedBox(
-                        width: 50,
-                        height: 26,
-                        child: TextField(
-                          controller: _budgetController,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          textAlign: TextAlign.center,
-                          decoration: InputDecoration(
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                            isDense: true,
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 54,
+                            height: 26,
+                            child: TextField(
+                              controller: _budgetController,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              textAlign: TextAlign.center,
+                              decoration: InputDecoration(
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                                isDense: true,
+                              ),
+                              style: TextStyle(fontSize: 12, color: isDark ? Colors.white : Colors.grey[900], fontWeight: FontWeight.bold),
+                              onChanged: (val) {
+                                final p = double.tryParse(val);
+                                if (p != null && p > 0) {
+                                  setState(() => _budget = p);
+                                  _computeFromPinnedLocation();
+                                }
+                              },
+                            ),
                           ),
-                          style: TextStyle(fontSize: 12, color: isDark ? Colors.white : Colors.grey[900], fontWeight: FontWeight.bold),
-                          onChanged: (val) {
-                            final p = double.tryParse(val);
-                            if (p != null && p > 0) {
-                              setState(() => _budget = p);
-                              _computeFromPinnedLocation();
-                            }
-                          },
-                        ),
+                          const SizedBox(width: 3),
+                          Text('₱', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                        ],
                       ),
-                      const SizedBox(width: 2),
-                      Text('₱', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[700])),
                     ],
-                    const Spacer(),
+                  ],
+                ),
+                const Divider(height: 10, color: Colors.black12),
+                // Row 3: Sensitivity
+                Row(
+                  children: [
                     const Icon(Icons.swap_calls, size: 13, color: Colors.grey),
                     const SizedBox(width: 4),
+                    Text('Detour Sensitivity:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[700])),
+                    const SizedBox(width: 6),
                     Expanded(
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(

@@ -137,7 +137,7 @@ class GasStationController extends Controller
             'branch' => 'required|string',
             'latitude' => 'required|numeric',
             'longitude' => 'required|numeric',
-            'status' => 'nullable|string|in:active,maintenance,out_of_stock',
+            'status' => 'nullable|string|in:active,maintenance,out_of_stock,inactive,deactivated',
         ]);
 
         $geofencePolygon = $this->generateFixedGeofence(
@@ -173,7 +173,7 @@ class GasStationController extends Controller
     public function updateStatus(Request $request, $id)
     {
         $request->validate([
-            'status' => 'required|string|in:active,maintenance,out_of_stock',
+            'status' => 'required|string|in:active,maintenance,out_of_stock,inactive,deactivated',
         ]);
 
         $station = GasStation::find($id);
@@ -248,19 +248,14 @@ class GasStationController extends Controller
             $status = 'merchant_verified';
         }
 
-        // 2. Geofence checks for motorists (Only motorists physically in range can report prices)
-        if ($user->role === 'motorist') {
-            if (isset($fields['latitude']) && isset($fields['longitude'])) {
-                $userLat = (float)$fields['latitude'];
-                $userLng = (float)$fields['longitude'];
-                $distance = $this->priceValidator->haversine($userLat, $userLng, (float)$station->latitude, (float)$station->longitude);
-                $insideGeofence = $this->priceValidator->isPointInPolygon($userLat, $userLng, $station->geofence_polygon ?? []);
-                if ($distance > 0.150 && !$insideGeofence) {
-                    return response([
-                        'message' => 'Geofence verification failed. You must be physically present at ' . $station->name . ' (~100m range) to report fuel prices.'
-                    ], 422);
-                }
-            }
+        // 2. Geofence evaluation: Determine if submission is within geofence range (~150m or polygon)
+        $isInsideGeofence = true;
+        if (isset($fields['latitude']) && isset($fields['longitude'])) {
+            $userLat = (float)$fields['latitude'];
+            $userLng = (float)$fields['longitude'];
+            $distance = $this->priceValidator->haversine($userLat, $userLng, (float)$station->latitude, (float)$station->longitude);
+            $insidePolygon = $this->priceValidator->isPointInPolygon($userLat, $userLng, $station->geofence_polygon ?? []);
+            $isInsideGeofence = ($distance <= 0.150 || $insidePolygon);
         }
 
 
@@ -277,6 +272,23 @@ class GasStationController extends Controller
             }
         }
 
+        // Check for exact duplicate submission by same user for same station & fuel type within 2 minutes
+        $recentDuplicate = FuelPrice::where('station_id', $station->id)
+            ->where('fuel_type', $fields['fuel_type'])
+            ->where('reported_by', $user->id)
+            ->where('price', $fields['price'])
+            ->where('created_at', '>=', now()->subMinutes(2))
+            ->first();
+
+        if ($recentDuplicate) {
+            return response([
+                'message' => 'Price already recorded recently.',
+                'price' => $recentDuplicate,
+                'anomaly_flagged' => false,
+                'is_inside_geofence' => $isInsideGeofence,
+            ], 200);
+        }
+
         // 3. Create price record
         $priceRecord = FuelPrice::create([
             'id' => (string) Str::uuid(),
@@ -288,6 +300,7 @@ class GasStationController extends Controller
             'created_at' => now(),
             'image_path' => $imagePath,
             'ocr_verified' => $ocrVerified,
+            'is_inside_geofence' => $isInsideGeofence,
         ]);
 
         // 4. Anomaly detection (only for crowdsourced prices)
@@ -342,9 +355,12 @@ class GasStationController extends Controller
         }
 
         return response([
-            'message' => 'Price updated successfully.',
+            'message' => $isInsideGeofence 
+                ? 'Price updated successfully.' 
+                : 'Recorded successfully. Waiting for other motorists to submit prices.',
             'price' => $priceRecord,
             'anomaly_flagged' => false,
+            'is_inside_geofence' => $isInsideGeofence,
         ], 201);
     }
 
@@ -491,5 +507,107 @@ class GasStationController extends Controller
         });
 
         return response($updates, 200);
+    }
+
+    // GET /api/price-submissions (Admin Summary of All Submitted Fuel Prices)
+    public function getAllSubmissions()
+    {
+        $prices = FuelPrice::with(['station', 'reporter', 'anomalyLogs'])
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function ($fp) {
+                $anomaly = $fp->anomalyLogs->first();
+                $calculatedStatus = 'pending';
+
+                if ($anomaly && $anomaly->status === 'dismissed') {
+                    $calculatedStatus = 'rejected';
+                } elseif ($anomaly && $anomaly->status === 'resolved') {
+                    $calculatedStatus = 'approved';
+                } elseif ($anomaly && $anomaly->status === 'pending') {
+                    $calculatedStatus = 'pending';
+                } elseif ($fp->status === 'merchant_verified' || $fp->ocr_verified) {
+                    $calculatedStatus = 'verified';
+                } elseif ($fp->is_inside_geofence) {
+                    $calculatedStatus = 'verified';
+                } else {
+                    $calculatedStatus = 'pending';
+                }
+
+                return [
+                    'id'                 => $fp->id,
+                    'station_id'         => $fp->station_id,
+                    'station_name'       => $fp->station ? $fp->station->name : 'Unknown Station',
+                    'station_branch'     => $fp->station ? $fp->station->branch : 'Main',
+                    'fuel_type'          => $fp->fuel_type,
+                    'price'              => (float)$fp->price,
+                    'reported_by'        => $fp->reported_by,
+                    'reporter_name'      => $fp->reporter ? $fp->reporter->name : 'Motorist',
+                    'trust_score'        => $fp->reporter ? $fp->reporter->trust_score : 50,
+                    'status'             => $fp->status,
+                    'ocr_verified'       => (bool)$fp->ocr_verified,
+                    'is_inside_geofence' => (bool)$fp->is_inside_geofence,
+                    'calculated_status'  => $calculatedStatus,
+                    'image_path'         => $fp->image_path,
+                    'created_at'         => $fp->created_at ? \Carbon\Carbon::parse($fp->created_at)->toIso8601String() : now()->toIso8601String(),
+                    'anomaly_id'         => $anomaly ? $anomaly->id : null,
+                ];
+            });
+
+        return response($prices, 200);
+    }
+
+    // POST /api/price-submissions/{id}/approve
+    public function approveSubmission($id)
+    {
+        $fp = FuelPrice::find($id);
+        if (!$fp) {
+            return response(['message' => 'Price submission not found'], 404);
+        }
+
+        $fp->is_inside_geofence = true;
+        $fp->save();
+
+        $anomalies = AnomalyLog::where('price_id', $fp->id)->get();
+        foreach ($anomalies as $anomaly) {
+            $anomaly->status = 'resolved';
+            $anomaly->save();
+        }
+
+        if ($fp->reporter && $fp->reporter->role === 'motorist') {
+            $fp->reporter->trust_score = min(100, $fp->reporter->trust_score + 5);
+            $fp->reporter->save();
+        }
+
+        return response(['message' => 'Price submission approved & verified successfully.'], 200);
+    }
+
+    // POST /api/price-submissions/{id}/reject
+    public function rejectSubmission($id)
+    {
+        $fp = FuelPrice::find($id);
+        if (!$fp) {
+            return response(['message' => 'Price submission not found'], 404);
+        }
+
+        $anomaly = AnomalyLog::where('price_id', $fp->id)->first();
+        if (!$anomaly) {
+            AnomalyLog::create([
+                'id'          => (string) Str::uuid(),
+                'station_id'  => $fp->station_id,
+                'price_id'    => $fp->id,
+                'description' => 'Price submission rejected manually by administrator.',
+                'status'      => 'dismissed',
+            ]);
+        } else {
+            $anomaly->status = 'dismissed';
+            $anomaly->save();
+        }
+
+        if ($fp->reporter && $fp->reporter->role === 'motorist') {
+            $fp->reporter->trust_score = max(0, $fp->reporter->trust_score - 10);
+            $fp->reporter->save();
+        }
+
+        return response(['message' => 'Price submission rejected.'], 200);
     }
 }

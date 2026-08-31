@@ -69,17 +69,12 @@ class PriceValidator
             return ['is_anomaly' => false, 'percentage' => 0, 'description' => ''];
         }
 
-        if ($reporter) {
-            if ($reporter->trust_score >= 80) {
-                return ['is_anomaly' => false, 'percentage' => 0, 'description' => ''];
-            }
-            if ($reporter->trust_score < 30) {
-                return [
-                    'is_anomaly' => true,
-                    'percentage' => 0,
-                    'description' => 'Automated anomaly flag: Reporter trust score is low (current: ' . $reporter->trust_score . ').'
-                ];
-            }
+        if ($reporter && $reporter->trust_score < 30) {
+            return [
+                'is_anomaly' => true,
+                'percentage' => 0,
+                'description' => 'Automated anomaly flag: Reporter trust score is low (current: ' . $reporter->trust_score . ').'
+            ];
         }
 
         $baselinePrice = null;
@@ -130,8 +125,15 @@ class PriceValidator
         }
 
         if (!$baselinePrice) {
-            // No baseline data available, accept the price directly
-            return ['is_anomaly' => false, 'percentage' => 0, 'description' => ''];
+            // Default regional market fallback baselines if database has no historical records yet
+            $defaults = [
+                'regular unleaded (91)' => 70.00,
+                'premium unleaded(95)' => 76.00,
+                'regular diesel'       => 71.00,
+                'premium diesel'       => 77.00,
+            ];
+            $baselinePrice = $defaults[$fuelType] ?? 70.00;
+            $source = 'regional market baseline';
         }
 
         $percentageDifference = abs(($price - $baselinePrice) / $baselinePrice) * 100;

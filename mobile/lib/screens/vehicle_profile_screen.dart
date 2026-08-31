@@ -65,15 +65,45 @@ class _VehicleProfileScreenState extends State<VehicleProfileScreen> {
             value: _selectedCatalogId,
             isExpanded: true,
             dropdownColor: Theme.of(context).cardColor,
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey[900],
+              fontWeight: FontWeight.w600,
+            ),
             decoration: InputDecoration(
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              filled: true,
+              fillColor: Theme.of(context).cardColor,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
               hintText: 'Select custom or preset template',
+              hintStyle: TextStyle(color: Colors.grey[500]),
             ),
             items: [
-              const DropdownMenuItem(value: null, child: Text('Custom Configuration (Manual Entry)')),
+              DropdownMenuItem(
+                value: null,
+                child: Text(
+                  'Custom Configuration (Manual Entry)',
+                  style: TextStyle(color: Colors.grey[800], fontSize: 13),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
               ...widget.catalog.map((item) => DropdownMenuItem(
                     value: item.id,
-                    child: Text('${item.make} ${item.model} (${item.year}) - ${item.defaultEfficiency} km/L'),
+                    child: Text(
+                      '${item.make} ${item.model} (${item.year}) - ${item.defaultEfficiency} km/L',
+                      style: TextStyle(color: Colors.grey[900], fontSize: 13),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ))
             ],
             onChanged: (val) {
@@ -93,9 +123,30 @@ class _VehicleProfileScreenState extends State<VehicleProfileScreen> {
           // Custom Input Type
           TextField(
             controller: _vehicleTypeController,
+            readOnly: _selectedCatalogId != null,
+            style: TextStyle(
+              fontSize: 14,
+              color: _selectedCatalogId != null ? Colors.grey[700] : Colors.grey[900],
+              fontWeight: FontWeight.w500,
+            ),
             decoration: InputDecoration(
               labelText: 'Vehicle Classification (e.g. Sedan, SUV)',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              filled: true,
+              fillColor: _selectedCatalogId != null ? Colors.grey.withOpacity(0.08) : Theme.of(context).cardColor,
+              suffixIcon: _selectedCatalogId != null ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey) : null,
+              helperText: _selectedCatalogId != null ? 'Locked to preset catalog choice' : null,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
             ),
           ),
           const SizedBox(height: 20),
@@ -103,11 +154,33 @@ class _VehicleProfileScreenState extends State<VehicleProfileScreen> {
           // Custom Efficiency Input
           TextField(
             controller: _vehicleEfficiencyController,
+            readOnly: _selectedCatalogId != null,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: TextStyle(
+              fontSize: 14,
+              color: _selectedCatalogId != null ? Colors.grey[700] : Colors.grey[900],
+              fontWeight: FontWeight.w500,
+            ),
             decoration: InputDecoration(
               labelText: 'Fuel Efficiency (km/L)',
-              helperText: 'A higher value represents a more fuel-efficient vehicle.',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              helperText: _selectedCatalogId != null 
+                  ? 'Locked to preset catalog choice' 
+                  : 'A higher value represents a more fuel-efficient vehicle.',
+              filled: true,
+              fillColor: _selectedCatalogId != null ? Colors.grey.withOpacity(0.08) : Theme.of(context).cardColor,
+              suffixIcon: _selectedCatalogId != null ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey) : null,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
             ),
           ),
           const SizedBox(height: 20),
@@ -115,11 +188,33 @@ class _VehicleProfileScreenState extends State<VehicleProfileScreen> {
           // Idling Rate Input
           TextField(
             controller: _vehicleIdlingRateController,
+            readOnly: _selectedCatalogId != null,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: TextStyle(
+              fontSize: 14,
+              color: _selectedCatalogId != null ? Colors.grey[700] : Colors.grey[900],
+              fontWeight: FontWeight.w500,
+            ),
             decoration: InputDecoration(
               labelText: 'Idling Rate (L/h)',
-              helperText: 'Fuel burned per hour while the engine idles (e.g. 0.3 motorcycle, 1.0 sedan, 1.8 SUV/truck).',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              helperText: _selectedCatalogId != null 
+                  ? 'Locked to preset catalog choice' 
+                  : 'Fuel burned per hour while the engine idles (e.g. 0.3 motorcycle, 1.0 sedan, 1.8 SUV/truck).',
+              filled: true,
+              fillColor: _selectedCatalogId != null ? Colors.grey.withOpacity(0.08) : Theme.of(context).cardColor,
+              suffixIcon: _selectedCatalogId != null ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey) : null,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.withOpacity(0.2)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Theme.of(context).primaryColor, width: 1.5),
+              ),
             ),
           ),
           const SizedBox(height: 35),

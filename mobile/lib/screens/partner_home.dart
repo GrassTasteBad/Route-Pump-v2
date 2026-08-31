@@ -51,32 +51,68 @@ class _PartnerDashboardState extends State<PartnerDashboard> {
   Future<void> _fetchBranchInfo() async {
     setState(() { _isLoading = true; });
     final partnerStationId = AppState().currentUser?['station_id'];
+
+    if (AppState().isSandboxMode) {
+      _loadMockBranchInfo(partnerStationId);
+      setState(() { _isLoading = false; });
+      return;
+    }
+
     try {
-      final res = await http.get(Uri.parse('$apiBaseUrl/gas-stations'), headers: AppState().getHeaders());
+      final res = await http.get(
+        Uri.parse('$apiBaseUrl/gas-stations'),
+        headers: AppState().getHeaders(),
+      ).timeout(const Duration(seconds: 4));
+
       if (res.statusCode == 200) {
         final List parsed = jsonDecode(res.body);
         final stationsList = parsed.map((x) => GasStation.fromJson(x)).toList();
         setState(() {
-          branchInfo = stationsList.firstWhere((s) => s.id == partnerStationId);
-          _regUnleaded91Controller.text  = branchInfo?.prices['regular unleaded (91)']?.toString() ?? '';
-          _premUnleaded95Controller.text = branchInfo?.prices['premium unleaded(95)']?.toString() ?? '';
-          _regDieselController.text      = branchInfo?.prices['regular diesel']?.toString() ?? '';
-          _premDieselController.text     = branchInfo?.prices['premium diesel']?.toString() ?? '';
-          activeStatus       = branchInfo?.status ?? 'active';
-          _fuelAvailability  = Map<String, bool>.from(branchInfo?.fuelAvailability ?? {
-            for (final t in kFuelTypes) t: true,
-          });
+          branchInfo = stationsList.firstWhere(
+            (s) => s.id == partnerStationId,
+            orElse: () => stationsList.first,
+          );
+          _populateControllersFromBranchInfo();
         });
+      } else {
+        _loadMockBranchInfo(partnerStationId);
       }
     } catch (e) {
+      AppState().isSandboxMode = true;
+      _loadMockBranchInfo(partnerStationId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to load branch info. Check server connection.'), backgroundColor: Colors.redAccent),
+          const SnackBar(
+            content: Text('Server unreachable. Operating Partner Portal in Sandbox Mode!'),
+            backgroundColor: Colors.amber,
+            duration: Duration(seconds: 3),
+          ),
         );
       }
     } finally {
       setState(() { _isLoading = false; });
     }
+  }
+
+  void _loadMockBranchInfo(String? partnerStationId) {
+    final mockList = AppState().mockStations;
+    branchInfo = mockList.firstWhere(
+      (s) => s.id == partnerStationId,
+      orElse: () => mockList.first,
+    );
+    _populateControllersFromBranchInfo();
+  }
+
+  void _populateControllersFromBranchInfo() {
+    if (branchInfo == null) return;
+    _regUnleaded91Controller.text  = branchInfo?.prices['regular unleaded (91)']?.toString() ?? '';
+    _premUnleaded95Controller.text = branchInfo?.prices['premium unleaded(95)']?.toString() ?? '';
+    _regDieselController.text      = branchInfo?.prices['regular diesel']?.toString() ?? '';
+    _premDieselController.text     = branchInfo?.prices['premium diesel']?.toString() ?? '';
+    activeStatus       = branchInfo?.status ?? 'active';
+    _fuelAvailability  = Map<String, bool>.from(branchInfo?.fuelAvailability ?? {
+      for (final t in kFuelTypes) t: true,
+    });
   }
 
   Future<void> _updatePrices() async {

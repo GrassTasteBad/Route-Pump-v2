@@ -16,6 +16,7 @@ export function initMap() {
   state.map = new google.maps.Map(mapElement, {
     center: { lat: 7.0736, lng: 125.6110 },
     zoom: 14,
+    tilt: 0,
     styles: null,
     mapTypeControl: false,
     streetViewControl: false,

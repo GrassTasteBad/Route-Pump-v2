@@ -1,15 +1,28 @@
+import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/gas_station.dart';
 import '../models/vehicle_profile.dart';
 import '../models/catalog_item.dart';
 
-// API Base URL (Standard Laravel serve address, dynamically configurable)
-String apiBaseUrl = 'http://127.0.0.1:8000/api';
+// API Base URL — 10.0.2.2 is the Android emulator alias for host localhost
+String _defaultApiUrl() {
+  if (!kIsWeb && Platform.isAndroid) return 'http://10.0.2.2:8000/api';
+  return 'http://127.0.0.1:8000/api';
+}
+
+String apiBaseUrl = _defaultApiUrl();
 
 Future<void> loadApiBaseUrl() async {
   final prefs = await SharedPreferences.getInstance();
-  apiBaseUrl = prefs.getString('api_base_url') ?? 'http://127.0.0.1:8000/api';
+  String stored = prefs.getString('api_base_url') ?? _defaultApiUrl();
+  // Auto-migrate: if stored URL uses 127.0.0.1 but we're on Android emulator, fix it
+  if (!kIsWeb && Platform.isAndroid && stored.contains('127.0.0.1')) {
+    stored = stored.replaceAll('127.0.0.1', '10.0.2.2');
+    await prefs.setString('api_base_url', stored);
+  }
+  apiBaseUrl = stored;
 }
 
 Future<void> saveApiBaseUrl(String newUrl) async {
