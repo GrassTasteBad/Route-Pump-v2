@@ -8,7 +8,7 @@
   <!-- Google Fonts & Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- Google Maps JavaScript API -->
-  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAGMiQQ_bqlwYd8vC6JP0Z3d7phZSQM8eo&v=weekly&loading=async&callback=Function.prototype" async defer></script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAGMiQQ_bqlwYd8vC6JP0Z3d7phZSQM8eo&v=weekly&libraries=places&loading=async&callback=Function.prototype" async defer></script>
 </head>
 <body>
 
@@ -337,9 +337,10 @@
             <thead>
               <tr>
                 <th>Station & Branch</th>
-                <th>Fuel Type</th>
+                <th>Fuel Variant</th>
                 <th>Reported Price & Variance</th>
                 <th>Reporter & Trust Score</th>
+                <th>Photo Proof</th>
                 <th>Submission Method & Time</th>
                 <th>Status</th>
                 <th>Actions</th>
@@ -375,7 +376,8 @@
             <h2 class="page-title">Motorist Price Submissions Summary</h2>
             <p class="page-subtitle">Track every fuel price submitted by motorists, including pending remote entries and verified geofence reports</p>
           </div>
-          <div class="page-header-actions">
+          <div class="page-header-actions" style="display: flex; gap: 10px;">
+            <button class="btn-primary" id="open-price-modal-btn" style="width: auto;"><i class="fa-solid fa-camera"></i> Submit Prices via Image</button>
             <button class="btn-secondary" id="refresh-submissions-btn" style="width: auto;"><i class="fa-solid fa-rotate"></i> Refresh List</button>
           </div>
         </div>
@@ -401,6 +403,11 @@
             <div class="stat-card-title">Rejected / Anomalies</div>
             <div class="stat-card-value" id="sub-stat-rejected" style="color: var(--accent-rose);">0</div>
             <i class="fa-solid fa-ban stat-card-icon" style="color: var(--accent-rose);"></i>
+          </div>
+          <div class="stat-card glass-panel">
+            <div class="stat-card-title">With Photo Proof</div>
+            <div class="stat-card-value" id="sub-stat-photos" style="color: var(--accent-cyan);">0</div>
+            <i class="fa-solid fa-camera stat-card-icon" style="color: var(--accent-cyan);"></i>
           </div>
         </div>
 
@@ -435,13 +442,14 @@
           <table class="custom-table">
             <thead>
               <tr>
-                <th>Station & Branch</th>
+                <th>Station &amp; Branch</th>
                 <th>Fuel Variant</th>
                 <th>Submitted Price</th>
-                <th>Reporter & Trust Score</th>
-                <th>Submission Location / Proof</th>
+                <th>Reporter &amp; Trust Score</th>
+                <th>Photo Proof</th>
+                <th>Location / Method</th>
                 <th>Submitted At</th>
-                <th>Status / Admin Decision</th>
+                <th>Status (Audit Record)</th>
               </tr>
             </thead>
             <tbody id="submissions-table-body">
@@ -733,6 +741,192 @@
       <div class="form-actions-row" id="report-modal-actions">
         <button type="button" class="btn-secondary" onclick="closeModal('report-detail-modal')">Close</button>
       </div>
+    </div>
+  </div>
+
+  <!-- SUBMIT PRICE VIA IMAGE MODAL (ADMIN) -->
+  <div id="price-submission-modal" class="modal-backdrop">
+    <div class="modal-card glass-panel" style="max-width: 580px;">
+      <div class="modal-title-row">
+        <h3 class="table-title"><i class="fa-solid fa-camera" style="color: var(--accent-cyan);"></i> Submit Prices via Image Proof</h3>
+        <button class="modal-close-btn" onclick="closeModal('price-submission-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
+        Upload 1 price board photo and specify every fuel variant available on the image in a single submission.
+      </p>
+      <form id="price-submission-form">
+        <div class="form-group">
+          <label class="form-label">Target Gas Station</label>
+          <select id="price-sub-station" class="form-input" required>
+            <option value="">-- Select Station --</option>
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label class="form-label">Price Board Proof Photo (1 photo for all variants)</label>
+          <input type="file" id="price-sub-photo" class="form-input" accept="image/*" style="padding: 8px;">
+          <div id="price-sub-preview-wrap" style="display:none; margin-top: 10px;">
+            <img id="price-sub-preview" src="" alt="Preview" style="max-height: 140px; border-radius: 8px; border: 1px solid var(--border-muted);">
+          </div>
+        </div>
+
+        <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin: 15px 0 10px 0;">
+          Fuel Variant Prices (PHP per Liter)
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" style="font-size: 11px;">Regular Unleaded (91)</label>
+            <input type="number" step="0.01" min="1" id="price-sub-unl91" class="form-input" placeholder="e.g. 68.50">
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" style="font-size: 11px;">Premium Unleaded (95)</label>
+            <input type="number" step="0.01" min="1" id="price-sub-unl95" class="form-input" placeholder="e.g. 74.00">
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" style="font-size: 11px;">Regular Diesel</label>
+            <input type="number" step="0.01" min="1" id="price-sub-dslreg" class="form-input" placeholder="e.g. 62.00">
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" style="font-size: 11px;">Premium Diesel</label>
+            <input type="number" step="0.01" min="1" id="price-sub-dslprem" class="form-input" placeholder="e.g. 67.50">
+          </div>
+        </div>
+        <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 6px;">
+          <i class="fa-solid fa-circle-info" style="color: var(--accent-cyan);"></i> Fill in all fuel variants shown on the photo. Leave blank any variants not sold at this station.
+        </p>
+
+        <div class="form-actions-row" style="margin-top: 20px;">
+          <button type="button" class="btn-secondary" onclick="closeModal('price-submission-modal')">Cancel</button>
+          <button type="submit" class="btn-primary" id="price-sub-submit-btn" style="width: auto;">
+            <i class="fa-solid fa-upload"></i> Submit All Fuel Variants
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- IMAGE AUDIT CONFIRMATION MODAL (Admin must verify photo before final submission) -->
+  <div id="price-audit-modal" class="modal-backdrop" style="z-index: 1100;">
+    <div class="modal-card glass-panel" style="max-width: 680px; width: 95%;">
+      <div class="modal-title-row">
+        <h3 class="table-title">
+          <i class="fa-solid fa-shield-halved" style="color: var(--accent-amber);"></i>
+          Image Audit — Verify Before Publishing
+        </h3>
+        <button class="modal-close-btn" id="audit-modal-close-btn">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <!-- Audit Notice -->
+      <div style="background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.35); border-radius: 10px; padding: 12px 16px; margin-bottom: 18px; display: flex; align-items: flex-start; gap: 12px;">
+        <i class="fa-solid fa-triangle-exclamation" style="color: var(--accent-amber); font-size: 18px; flex-shrink:0; margin-top:1px;"></i>
+        <div>
+          <div style="font-size: 13.5px; font-weight: 700; color: var(--accent-amber); margin-bottom: 3px;">Admin Image Audit Required</div>
+          <div style="font-size: 12.5px; color: var(--text-secondary); line-height: 1.55;">
+            Review the uploaded price board photo carefully. Confirm that the prices shown in the image match the entries below before publishing to active motorists. Once approved the prices go live immediately.
+          </div>
+        </div>
+      </div>
+
+      <!-- Side-by-side: image + price summary -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px;">
+
+        <!-- Photo preview -->
+        <div>
+          <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px;">
+            <i class="fa-solid fa-camera" style="color: var(--accent-cyan);"></i> Submitted Photo Proof
+          </div>
+          <div id="audit-img-wrap" style="border: 1px solid var(--border-glass); border-radius: 10px; overflow: hidden; background: var(--bg-secondary); min-height: 180px; display: flex; align-items: center; justify-content: center;">
+            <img id="audit-preview-img" src="" alt="Price board proof"
+                 style="max-width: 100%; max-height: 260px; object-fit: contain; display: none;">
+            <div id="audit-no-photo" style="text-align: center; color: var(--text-secondary); font-size: 13px; padding: 24px;">
+              <i class="fa-solid fa-ban" style="font-size: 28px; margin-bottom: 8px; display: block;"></i>
+              No photo attached
+            </div>
+          </div>
+          <div id="audit-ocr-hint" style="font-size: 11.5px; color: var(--text-secondary); margin-top: 6px; display: none;">
+            <i class="fa-solid fa-wand-magic-sparkles" style="color: var(--accent-cyan);"></i>
+            Photo will be processed by OCR for automatic price verification.
+          </div>
+        </div>
+
+        <!-- Price summary -->
+        <div>
+          <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px;">
+            <i class="fa-solid fa-receipt" style="color: var(--accent-emerald);"></i> Prices to be Published
+          </div>
+          <div id="audit-station-label" style="font-size: 13.5px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px;"></div>
+          <div id="audit-prices-list" style="display: flex; flex-direction: column; gap: 10px;"></div>
+
+          <!-- Audit checklist -->
+          <div style="margin-top: 16px; padding: 12px; background: rgba(16,185,129,0.06); border: 1px solid rgba(16,185,129,0.2); border-radius: 8px;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--accent-emerald); margin-bottom: 8px;">
+              <i class="fa-solid fa-clipboard-check"></i> Audit Checklist
+            </div>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 6px; cursor: pointer;">
+              <input type="checkbox" id="audit-check-match" style="width:15px;height:15px;accent-color:var(--accent-emerald);">
+              Prices on photo match the entries above
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 6px; cursor: pointer;">
+              <input type="checkbox" id="audit-check-legit" style="width:15px;height:15px;accent-color:var(--accent-emerald);">
+              Photo appears to be a genuine price board
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); cursor: pointer;">
+              <input type="checkbox" id="audit-check-station" style="width:15px;height:15px;accent-color:var(--accent-emerald);">
+              Correct gas station selected
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action row -->
+      <div class="form-actions-row" style="margin-top: 4px; gap: 10px;">
+        <button type="button" class="btn-secondary" id="audit-goback-btn">
+          <i class="fa-solid fa-arrow-left"></i> Go Back &amp; Edit
+        </button>
+        <button type="button" class="btn-danger" id="audit-reject-btn">
+          <i class="fa-solid fa-xmark"></i> Cancel Submission
+        </button>
+        <button type="button" class="btn-success" id="audit-confirm-btn" disabled>
+          <i class="fa-solid fa-check-double"></i> Confirm &amp; Publish Prices
+        </button>
+      </div>
+      <div style="font-size: 11.5px; color: var(--text-secondary); text-align: center; margin-top: 10px;">
+        <i class="fa-solid fa-circle-info" style="color: var(--accent-amber);"></i>
+        All 3 audit checkboxes must be ticked before you can publish.
+      </div>
+    </div>
+  </div>
+
+  <!-- PHOTO PROOF LIGHTBOX MODAL -->
+  <div id="proof-photo-modal"
+       style="display:none;position:fixed;inset:0;z-index:9999;
+              background:rgba(0,0,0,.88);align-items:center;justify-content:center;
+              backdrop-filter:blur(6px);"
+       onclick="if(event.target===this)window.__rpCloseProof()">
+    <div style="position:relative;max-width:92vw;max-height:92vh;display:flex;flex-direction:column;align-items:center;gap:16px;">
+      <!-- Close button -->
+      <button onclick="window.__rpCloseProof()"
+              style="position:absolute;top:-44px;right:0;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);
+                     color:#fff;border-radius:50%;width:36px;height:36px;font-size:18px;cursor:pointer;
+                     display:flex;align-items:center;justify-content:center;">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+      <!-- Spinner while loading -->
+      <div id="proof-photo-loader"
+           style="display:none;flex-direction:column;align-items:center;gap:12px;color:#fff;font-size:14px;">
+        <i class="fa-solid fa-spinner fa-spin" style="font-size:36px;color:var(--accent-cyan);"></i>
+        Loading photo proof…
+      </div>
+      <!-- The proof image -->
+      <img id="proof-photo-img" src="" alt="Price proof photo"
+           style="display:none;max-width:88vw;max-height:82vh;border-radius:12px;
+                  border:2px solid rgba(255,255,255,.15);box-shadow:0 8px 40px rgba(0,0,0,.7);object-fit:contain;">
+      <p style="color:rgba(255,255,255,.5);font-size:12px;margin:0;">
+        <i class="fa-solid fa-camera" style="color:var(--accent-cyan);"></i>
+        Motorist-submitted price verification photo &mdash; click outside or ✕ to close
+      </p>
     </div>
   </div>
 

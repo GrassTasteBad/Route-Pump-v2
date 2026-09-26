@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -16,7 +17,6 @@ import '../services/api_service.dart';
 import '../services/routing_service.dart';
 import '../services/ocr_service.dart';
 import '../widgets/badge_widget.dart';
-import '../widgets/map3d_navigation_view.dart';
 import 'auth_gate.dart';
 import 'location_explorer_screen.dart';
 import 'leaderboard_screen.dart';
@@ -30,7 +30,6 @@ class MotoristDashboard extends StatefulWidget {
 
 class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindingObserver {
   int _currentIndex = 0;
-  MapType _mapType = MapType.normal;
   
   // Draggable Motorist mock coordinates in Davao City
   double motoristLat = 7.0725;
@@ -58,7 +57,60 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
   
   Map<String, dynamic> routingData = {};
   GoogleMapController? _googleMapController;
-  final GlobalKey<Map3DNavigationViewState> _map3dKey = GlobalKey<Map3DNavigationViewState>();
+  BitmapDescriptor? _carMarkerIcon;
+
+  Future<void> _loadCarMarker() async {
+    try {
+      final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
+      final Canvas canvas = Canvas(pictureRecorder);
+      const double size = 120.0;
+      final center = const Offset(size / 2, size / 2);
+
+      // Outer soft aura glow
+      final glowPaint = Paint()
+        ..color = const Color(0xFF00FFCC).withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+      canvas.drawCircle(center, 44, glowPaint);
+
+      // Deep dark sleek base circle
+      final basePaint = Paint()..color = const Color(0xFF0F172A);
+      canvas.drawCircle(center, 36, basePaint);
+
+      // Vibrant emerald ring border
+      final ringPaint = Paint()
+        ..color = const Color(0xFF10B981)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4.5;
+      canvas.drawCircle(center, 36, ringPaint);
+
+      // Sharp Navigation Arrow / Chevron pointing straight UP
+      final arrowPath = Path()
+        ..moveTo(size / 2, size / 2 - 24) // Tip
+        ..lineTo(size / 2 + 18, size / 2 + 18) // Bottom right wing
+        ..lineTo(size / 2, size / 2 + 8) // Recessed notch
+        ..lineTo(size / 2 - 18, size / 2 + 18) // Bottom left wing
+        ..close();
+
+      final arrowPaint = Paint()
+        ..color = const Color(0xFF00FFCC)
+        ..style = PaintingStyle.fill;
+      canvas.drawPath(arrowPath, arrowPaint);
+
+      final picture = pictureRecorder.endRecording();
+      final img = await picture.toImage(size.toInt(), size.toInt());
+      final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData != null) {
+        final icon = BitmapDescriptor.fromBytes(byteData.buffer.asUint8List());
+        if (mounted) {
+          setState(() {
+            _carMarkerIcon = icon;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error generating car marker: $e');
+    }
+  }
 
   final _vehicleTypeController = TextEditingController();
   final _vehicleEfficiencyController = TextEditingController();
@@ -75,8 +127,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
   bool _wasInsideGeofence = false;
   DateTime? _lastTelemetryPing;
 
-  void _moveCamera(double lat, double lng, {double zoom = 15.0, double bearing = 0.0, double tilt = 0.0}) {
-    // Push to standard GoogleMap controller if still present (non-nav overview)
+  void _moveCamera(double lat, double lng, {double zoom = 18.5, double bearing = 0.0, double tilt = 60.0}) {
     if (_googleMapController != null) {
       _googleMapController!.animateCamera(
         CameraUpdate.newCameraPosition(
@@ -88,11 +139,6 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           ),
         ),
       );
-    }
-    // Push live position to Map3DNavigationView
-    final state = _map3dKey.currentState;
-    if (state != null && isNavigating) {
-      state.updateCamera(lat, lng, bearing, tilt);
     }
   }
 
@@ -852,6 +898,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadCarMarker();
     _litersController.text = liters.toStringAsFixed(0);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initWithLocation();
@@ -908,16 +955,22 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 10, // Update every 10 metres (less aggressive on emulator)
+        distanceFilter: 5, // Update every 5 metres for smooth car navigation tracking
       ),
     ).listen((Position position) {
       _updateLocation(position.latitude, position.longitude, speed: position.speed);
       if (isNavigating) {
-        double bearing = 0.0;
-        if (navigationRoutePoints.length >= 2) {
+        double bearing = currentBearing;
+        if (position.heading > 0) {
+          bearing = position.heading;
+          currentBearing = bearing;
+        } else if (navigationRoutePoints.length >= 2) {
           bearing = _calculateBearing(LatLng(position.latitude, position.longitude), navigationRoutePoints[1]);
+          currentBearing = bearing;
         }
-        _moveCamera(position.latitude, position.longitude, zoom: 17.5, bearing: bearing, tilt: 45.0);
+        if (_autoFollowCamera) {
+          _moveCamera(position.latitude, position.longitude, zoom: 18.5, bearing: bearing, tilt: 60.0);
+        }
       }
     }, onError: (e) {
       print('Location stream error: $e');
@@ -1357,22 +1410,12 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
       _startLiveSync();
     } catch (e) {
       print('Network error fetching: $e');
-      AppState().isSandboxMode = true;
-      stations = AppState().mockStations;
-      catalog = AppState().mockCatalog;
-      vehicle = AppState().mockProfile;
-      _selectedCatalogId = vehicle?.catalogId;
-      _vehicleTypeController.text = vehicle?.vehicleType ?? 'Sedan';
-      _vehicleEfficiencyController.text = vehicle?.fuelEfficiency.toString() ?? '14.5';
-      _vehicleIdlingRateController.text = vehicle?.idlingRate.toString() ?? '1.20';
-      _resetFuelTypeIfIncompatible();
-      _computeSavingsLocally();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Backend server unreachable. Switched to Sandbox / Offline Mode!'),
-            backgroundColor: Colors.amber,
-            duration: Duration(seconds: 3),
+          SnackBar(
+            content: Text('Backend server unreachable at $apiBaseUrl. Check connection.'),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 4),
           ),
         );
       }
@@ -1486,50 +1529,50 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     bool anomalyFlagged = false;
     bool allInsideFence = true;
 
-    for (var entry in fuelPrices.entries) {
-      final type = entry.key;
-      final price = entry.value;
+    final uri = Uri.parse('$apiBaseUrl/gas-stations/$stationId/prices');
+    final headers = AppState().getHeaders();
 
-      final uri = Uri.parse('$apiBaseUrl/gas-stations/$stationId/prices');
-      final headers = AppState().getHeaders();
+    http.Response res;
+    if (photoFile != null) {
+      // Single upload: only 1 photo is sent for all fuel variants together
+      final request = http.MultipartRequest('POST', uri);
+      request.headers.addAll(headers);
+      request.fields['prices'] = jsonEncode(fuelPrices);
+      request.fields['latitude'] = motoristLat.toString();
+      request.fields['longitude'] = motoristLng.toString();
+      request.files.add(await http.MultipartFile.fromPath(
+        'photo',
+        photoFile.path,
+        filename: photoFile.path.split(Platform.pathSeparator).last,
+      ));
+      final streamedRes = await request.send();
+      res = await http.Response.fromStream(streamedRes);
+    } else {
+      // Single JSON POST when no photo
+      res = await http.post(
+        uri,
+        headers: headers,
+        body: jsonEncode({
+          'prices': fuelPrices,
+          'latitude': motoristLat,
+          'longitude': motoristLng,
+        }),
+      );
+    }
 
-      http.Response res;
-      if (photoFile != null) {
-        // Upload with real image file as multipart
-        final request = http.MultipartRequest('POST', uri);
-        request.headers.addAll(headers);
-        request.fields['fuel_type'] = type;
-        request.fields['price'] = price.toString();
-        request.fields['latitude'] = motoristLat.toString();
-        request.fields['longitude'] = motoristLng.toString();
-        request.files.add(await http.MultipartFile.fromPath(
-          'photo',
-          photoFile.path,
-          filename: photoFile.path.split(Platform.pathSeparator).last,
-        ));
-        final streamedRes = await request.send();
-        res = await http.Response.fromStream(streamedRes);
-      } else {
-        // Plain JSON POST when no photo
-        res = await http.post(
-          uri,
-          headers: headers,
-          body: jsonEncode({
-            'fuel_type': type,
-            'price': price,
-            'latitude': motoristLat,
-            'longitude': motoristLng,
-          }),
+    final data = jsonDecode(res.body);
+    if (res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 202) {
+      if (data['anomaly_flagged'] == true) anomalyFlagged = true;
+      if (data['is_inside_geofence'] == false) allInsideFence = false;
+      // Photo submission held for admin review — not an error, just pending
+      if (data['pending_review'] == true) {
+        await _fetchData();
+        throw Exception(
+          '📸 Photo submitted! An admin will review your image and approve the prices before they go live.'
         );
       }
-
-      final data = jsonDecode(res.body);
-      if (res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 202) {
-        if (data['anomaly_flagged'] == true) anomalyFlagged = true;
-        if (data['is_inside_geofence'] == false) allInsideFence = false;
-      } else {
-        throw Exception(data['message'] ?? 'Failed to report price for $type');
-      }
+    } else {
+      throw Exception(data['message'] ?? 'Failed to report prices');
     }
 
     await _fetchData();
@@ -1579,17 +1622,14 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
         _fetchRoutingCalculations();
       }
     } catch (e) {
-      AppState().isSandboxMode = true;
-      setState(() {
-        vehicle = VehicleProfile(id: 'mock-p', catalogId: catId, vehicleType: type, fuelEfficiency: efficiency, idlingRate: idlingRate);
-        AppState().mockProfile = vehicle;
-        _selectedCatalogId = catId;
-        _vehicleTypeController.text = type;
-        _vehicleEfficiencyController.text = efficiency.toString();
-        _vehicleIdlingRateController.text = idlingRate.toString();
-        _resetFuelTypeIfIncompatible();
-      });
-      _computeSavingsLocally();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update vehicle profile on server: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
     }
   }
 
@@ -1657,17 +1697,6 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
           errorBuilder: (context, error, stackTrace) => const Text('RoutePump', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
         ),
         actions: [
-          PopupMenuButton<MapType>(
-            icon: const Icon(Icons.layers_outlined),
-            tooltip: 'Map Type',
-            onSelected: (type) => setState(() => _mapType = type),
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: MapType.normal,    child: Text('Normal')),
-              PopupMenuItem(value: MapType.satellite, child: Text('Satellite')),
-              PopupMenuItem(value: MapType.terrain,   child: Text('Terrain')),
-              PopupMenuItem(value: MapType.hybrid,    child: Text('Hybrid')),
-            ],
-          ),
           IconButton(
             icon: const Icon(Icons.emoji_events_outlined, color: Color(0xFFF59E0B)),
             tooltip: 'Leaderboard & Trust Score',
@@ -1708,43 +1737,35 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     );
   }
 
-  // ignore: unused_element
-  Set<Marker> _buildMarkers() {
+  Set<Marker> _buildNavigationMarkers() {
     final Set<Marker> markerSet = {};
 
+    // 1. Motorist Vehicle / Navigation Chevron Marker (Course-Up, Flat 3D tilted)
     markerSet.add(
       Marker(
-        markerId: const MarkerId('motorist'),
+        markerId: const MarkerId('nav_motorist'),
         position: LatLng(motoristLat, motoristLng),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-        infoWindow: const InfoWindow(title: 'My Location'),
+        rotation: currentBearing,
+        flat: true,
+        anchor: const Offset(0.5, 0.5),
+        icon: _carMarkerIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
+        infoWindow: const InfoWindow(title: 'Your Vehicle'),
+        zIndex: 3.0,
       ),
     );
 
-    for (var s in stations) {
-      if (s.status != 'active') continue;
-
-      double hue;
-      if (s.queueCount > 3) {
-        hue = BitmapDescriptor.hueRed;
-      } else if (s.queueCount > 0) {
-        hue = BitmapDescriptor.hueYellow;
-      } else {
-        hue = BitmapDescriptor.hueCyan;
-      }
-
+    // 2. Destination Gas Station Target Marker
+    if (navigationTarget != null) {
       markerSet.add(
         Marker(
-          markerId: MarkerId('station_${s.id}'),
-          position: LatLng(s.latitude, s.longitude),
-          icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+          markerId: MarkerId('nav_station_${navigationTarget!.id}'),
+          position: LatLng(navigationTarget!.latitude, navigationTarget!.longitude),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
           infoWindow: InfoWindow(
-            title: '${s.name} - ${s.branch}',
-            snippet: 'Queue: ${s.queueCount} cars | Wait: ${s.waitTimeMinutes.toInt()} mins',
+            title: '${navigationTarget!.name} – ${navigationTarget!.branch}',
+            snippet: 'Queue: ${navigationTarget!.queueCount} cars | Wait: ${navigationTarget!.waitTimeMinutes.toInt()} mins',
           ),
-          onTap: () {
-            _moveCamera(s.latitude, s.longitude, zoom: 16.0);
-          },
+          zIndex: 2.0,
         ),
       );
     }
@@ -1752,17 +1773,35 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
     return markerSet;
   }
 
-  // ignore: unused_element
-  Set<Polyline> _buildPolylines() {
+  Set<Polyline> _buildNavigationPolylines() {
     final Set<Polyline> polylineSet = {};
 
     if (navigationRoutePoints.isNotEmpty) {
+      // 1. Dark high-contrast casing line underneath
       polylineSet.add(
         Polyline(
-          polylineId: const PolylineId('route_path'),
+          polylineId: const PolylineId('nav_route_casing'),
           points: navigationRoutePoints,
-          color: const Color(0xFF00FFCC).withOpacity(isNavigating ? 1.0 : 0.6),
-          width: isNavigating ? 6 : 4,
+          color: const Color(0xFF064E3B),
+          width: 9,
+          jointType: JointType.round,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          zIndex: 1,
+        ),
+      );
+
+      // 2. Glowing vibrant neon navigation route line
+      polylineSet.add(
+        Polyline(
+          polylineId: const PolylineId('nav_route_path'),
+          points: navigationRoutePoints,
+          color: const Color(0xFF00FFCC),
+          width: 6,
+          jointType: JointType.round,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          zIndex: 2,
         ),
       );
     }
@@ -1782,20 +1821,46 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
 
       return Stack(
         children: [
-          // Photorealistic 3D Navigation Map (gmp-map-3d via WebView)
-          Map3DNavigationView(
-            key: _map3dKey,
-            lat: motoristLat,
-            lng: motoristLng,
-            bearing: currentBearing,
-            tilt: _navTilt,
-            destLat: navigationTarget!.latitude,
-            destLng: navigationTarget!.longitude,
-            routePoints: navigationRoutePoints
-                .map((p) => {'lat': p.latitude, 'lng': p.longitude})
-                .toList(),
+          // Native Hardware-Accelerated Google Map in 3D Car Navigation Mode (Course-Up, 60 deg Tilt)
+          GoogleMap(
+            initialCameraPosition: CameraPosition(
+              target: LatLng(motoristLat, motoristLng),
+              zoom: 18.5,
+              bearing: currentBearing,
+              tilt: 60.0,
+            ),
+            mapType: MapType.normal,
+            onMapCreated: (controller) {
+              _googleMapController = controller;
+              controller.animateCamera(
+                CameraUpdate.newCameraPosition(
+                  CameraPosition(
+                    target: LatLng(motoristLat, motoristLng),
+                    zoom: 18.5,
+                    bearing: currentBearing,
+                    tilt: 60.0,
+                  ),
+                ),
+              );
+            },
+            onCameraMoveStarted: () {
+              // If driver drags the map, decouple auto-follow
+              if (_autoFollowCamera) {
+                setState(() => _autoFollowCamera = false);
+              }
+            },
+            markers: _buildNavigationMarkers(),
+            polylines: _buildNavigationPolylines(),
+            myLocationEnabled: false,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
+            compassEnabled: true,
+            trafficEnabled: true,
+            buildingsEnabled: true,
+            mapToolbarEnabled: false,
+            rotateGesturesEnabled: true,
+            tiltGesturesEnabled: true,
           ),
-
 
           // Top Turn-by-Turn Maneuver HUD Banner
           Positioned(
@@ -1871,77 +1936,27 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
             ),
           ),
 
-          // Right Map Control Floating Buttons (Perspective, Recenter, Map Mode, Mute)
+          // Right Map Control Floating Button (Audio Mute/Unmute only - 3D and Satellite removed)
           Positioned(
             top: 110,
             right: 12,
-            child: Column(
-              children: [
-                // 3D / 2D Perspective Toggle
-                FloatingActionButton.small(
-                  heroTag: 'perspective_btn',
-                  backgroundColor: const Color(0xFF0F172A).withOpacity(0.9),
-                  foregroundColor: Colors.white,
-                  tooltip: _navTilt > 0 ? 'Switch to 2D Overhead' : 'Switch to 3D Perspective',
-                  onPressed: () {
-                    setState(() {
-                      _navTilt = _navTilt > 0 ? 0.0 : 60.0;
-                      _autoFollowCamera = true;
-                    });
-                    _moveCamera(
-                      motoristLat,
-                      motoristLng,
-                      zoom: 18.5,
-                      bearing: _navTilt > 0 ? currentBearing : 0.0,
-                      tilt: _navTilt,
-                    );
-                  },
-                  child: Text(
-                    _navTilt > 0 ? '3D' : '2D',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF10B981)),
-                  ),
-                ),
-                const SizedBox(height: 8),
-
-                // Map Style Switcher
-                FloatingActionButton.small(
-                  heroTag: 'maptype_btn',
-                  backgroundColor: const Color(0xFF0F172A).withOpacity(0.9),
-                  foregroundColor: Colors.white,
-                  tooltip: 'Toggle Map Mode',
-                  onPressed: () {
-                    setState(() {
-                      _mapType = _mapType == MapType.normal ? MapType.hybrid : MapType.normal;
-                    });
-                  },
-                  child: Icon(
-                    _mapType == MapType.normal ? Icons.satellite_alt : Icons.map,
-                    size: 18,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 8),
-
-                // Audio Mute/Unmute Toggle
-                FloatingActionButton.small(
-                  heroTag: 'mute_btn',
-                  backgroundColor: const Color(0xFF0F172A).withOpacity(0.9),
-                  foregroundColor: _isMuted ? Colors.redAccent : const Color(0xFF10B981),
-                  tooltip: _isMuted ? 'Unmute Audio Guidance' : 'Mute Audio Guidance',
-                  onPressed: () {
-                    setState(() {
-                      _isMuted = !_isMuted;
-                    });
-                    if (_isMuted) {
-                      _flutterTts.stop();
-                    }
-                  },
-                  child: Icon(
-                    _isMuted ? Icons.volume_off : Icons.volume_up,
-                    size: 18,
-                  ),
-                ),
-              ],
+            child: FloatingActionButton.small(
+              heroTag: 'mute_btn',
+              backgroundColor: const Color(0xFF0F172A).withOpacity(0.9),
+              foregroundColor: _isMuted ? Colors.redAccent : const Color(0xFF10B981),
+              tooltip: _isMuted ? 'Unmute Audio Guidance' : 'Mute Audio Guidance',
+              onPressed: () {
+                setState(() {
+                  _isMuted = !_isMuted;
+                });
+                if (_isMuted) {
+                  _flutterTts.stop();
+                }
+              },
+              child: Icon(
+                _isMuted ? Icons.volume_off : Icons.volume_up,
+                size: 18,
+              ),
             ),
           ),
 
@@ -1959,12 +1974,12 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                       motoristLat,
                       motoristLng,
                       zoom: 18.5,
-                      bearing: _navTilt > 0 ? currentBearing : 0.0,
-                      tilt: _navTilt,
+                      bearing: currentBearing,
+                      tilt: 60.0,
                     );
                   },
                   icon: const Icon(Icons.my_location, size: 16),
-                  label: const Text('RECENTER MAP', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  label: const Text('RECENTER CAR', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF10B981),
                     foregroundColor: Colors.white,
@@ -2573,7 +2588,7 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                                   setState(() {
                                     isNavigating = true;
                                     _autoFollowCamera = true;
-                                    _navTilt = 55.0;
+                                    _navTilt = 60.0;
                                     navigationTarget = targetStation;
                                     selectedStation = targetStation;
                                     remainingDistance = AppState().getHaversineDistance(
@@ -2583,6 +2598,10 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                                       targetStation.longitude,
                                     );
                                   });
+
+                                  // Immediate swoop into car navigation mode
+                                  _moveCamera(motoristLat, motoristLng, zoom: 18.5, bearing: currentBearing, tilt: 60.0);
+
                                   await _fetchRoadRoute(targetStation.latitude, targetStation.longitude);
                                   
                                   if (navigationRoutePoints.length >= 2) {
@@ -2590,15 +2609,17 @@ class _MotoristDashboardState extends State<MotoristDashboard> with WidgetsBindi
                                   }
 
                                   WidgetsBinding.instance.addPostFrameCallback((_) {
-                                    _moveCamera(motoristLat, motoristLng, zoom: 18.5, bearing: currentBearing, tilt: 55.0);
+                                    _moveCamera(motoristLat, motoristLng, zoom: 18.5, bearing: currentBearing, tilt: 60.0);
                                   });
 
                                   if (navigationInstructions.isNotEmpty) {
                                     await _speakInstruction(navigationInstructions[0]);
+                                  } else {
+                                    await _speakInstruction('Starting navigation to ${targetStation.name}');
                                   }
                                 },
                                 icon: const Icon(Icons.navigation, size: 18),
-                                label: const Text('Navigate', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                                label: const Text('Start Navigation', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF10B981),
                                   foregroundColor: Colors.white,

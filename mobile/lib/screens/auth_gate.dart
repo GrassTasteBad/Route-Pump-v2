@@ -47,32 +47,15 @@ class _AuthGateState extends State<AuthGate> {
         });
       }
     } catch (e) {
-      final email = _emailController.text.trim().toLowerCase();
-      AppState().isSandboxMode = true;
-      AppState().token = 'sandbox-mock-token';
-      if (email.contains('partner')) {
-        AppState().currentUser = {
-          'id': 'mock-partner-id',
-          'name': 'Partner Station',
-          'email': email,
-          'role': 'partner',
-          'station_id': 'mock-petron-roxas',
-        };
-      } else {
-        AppState().currentUser = {
-          'id': 'mock-motorist-id',
-          'name': 'Demo Motorist',
-          'email': email,
-          'role': 'motorist',
-        };
-      }
-      _navigateToDashboard();
+      setState(() {
+        _errorMessage = 'Cannot reach backend at $apiBaseUrl.\nPlease ensure the Laravel server is running and your phone and PC are on the same Wi-Fi.';
+      });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Backend server unreachable. Operating in Sandbox Mode!'),
-            backgroundColor: Colors.amber,
-            duration: Duration(seconds: 3),
+          SnackBar(
+            content: Text('Cannot reach backend server ($apiBaseUrl)'),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 4),
           ),
         );
       }
@@ -266,8 +249,7 @@ class _AuthGateState extends State<AuthGate> {
                         content: const Text(
                           'Test login credentials:\n\n'
                           '• Motorist: motorist@routepump.com / password\n'
-                          '• Station Partner: partner@routepump.com / password\n\n'
-                          'If the Laravel backend server is offline, RoutePump will fallback to Sandbox Mode automatically!',
+                          '• Station Partner: partner@routepump.com / password',
                         ),
                         actions: [
                           TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),

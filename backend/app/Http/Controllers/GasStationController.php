@@ -227,141 +227,187 @@ class GasStationController extends Controller
     // POST /api/gas-stations/{id}/prices
     public function reportPrice(Request $request, $id)
     {
-        $fields = $request->validate([
-            'fuel_type' => 'required|string|in:regular unleaded (91),premium unleaded(95),regular diesel,premium diesel',
-            'price' => 'required|numeric|min:1',
-            'latitude' => 'nullable|numeric',
-            'longitude' => 'nullable|numeric',
-            'photo' => 'nullable|image|max:10240',
-        ]);
-
         $station = GasStation::find($id);
         if (!$station) {
             return response(['message' => 'Station not found'], 404);
         }
 
-        $user = $request->user();
-
-        // 1. Determine status
-        $status = 'crowdsourced';
-        if ($user->role === 'partner' && $user->station_id === $station->id) {
-            $status = 'merchant_verified';
+        // 1. Parse fuel prices — supports both multi-variant batch ('prices') and single ('fuel_type' + 'price')
+        $prices = [];
+        if ($request->has('prices')) {
+            $rawPrices = $request->input('prices');
+            if (is_string($rawPrices)) {
+                $decoded = json_decode($rawPrices, true);
+                $prices = is_array($decoded) ? $decoded : [];
+            } elseif (is_array($rawPrices)) {
+                $prices = $rawPrices;
+            }
+        } elseif ($request->filled('fuel_type') && $request->filled('price')) {
+            $prices = [$request->input('fuel_type') => $request->input('price')];
         }
 
-        // 2. Geofence evaluation: Determine if submission is within geofence range (~150m or polygon)
+        $validTypes = ['regular unleaded (91)', 'premium unleaded(95)', 'regular diesel', 'premium diesel'];
+        $sanitizedPrices = [];
+        foreach ($prices as $type => $price) {
+            $normalizedType = strtolower(trim((string)$type));
+            if (in_array($normalizedType, $validTypes) && is_numeric($price) && (float)$price >= 1) {
+                $sanitizedPrices[$normalizedType] = (float)$price;
+            }
+        }
+
+        if (empty($sanitizedPrices)) {
+            return response(['message' => 'Please provide at least one valid fuel type and price.'], 422);
+        }
+
+        $user = $request->user();
+
+        // 2. Determine status
+        // Partner/admin submissions go live immediately as merchant_verified.
+        // Motorist photo submissions are held as pending_photo_review until an admin
+        // explicitly approves them — they never auto-publish.
+        $isPhotoSubmission = $request->hasFile('photo');
+        $status = 'crowdsourced';
+        if (($user->role === 'partner' && $user->station_id === $station->id) || $user->role === 'admin') {
+            $status = 'merchant_verified';
+        } elseif ($isPhotoSubmission) {
+            // Motorist with a photo: hold for admin approval before going live
+            $status = 'pending_photo_review';
+        }
+
+        // 3. Geofence evaluation: Determine if submission is within geofence range (~150m or polygon)
         $isInsideGeofence = true;
-        if (isset($fields['latitude']) && isset($fields['longitude'])) {
-            $userLat = (float)$fields['latitude'];
-            $userLng = (float)$fields['longitude'];
+        if ($request->filled('latitude') && $request->filled('longitude')) {
+            $userLat = (float)$request->input('latitude');
+            $userLng = (float)$request->input('longitude');
             $distance = $this->priceValidator->haversine($userLat, $userLng, (float)$station->latitude, (float)$station->longitude);
             $insidePolygon = $this->priceValidator->isPointInPolygon($userLat, $userLng, $station->geofence_polygon ?? []);
             $isInsideGeofence = ($distance <= 0.150 || $insidePolygon);
         }
 
-
-        // 2.5 Real OCR verification (mobile runs ML Kit; backend validates the image is genuine)
+        // 4. Single Photo upload & OCR verification for all fuel variants
         $ocrVerified = false;
         $imagePath = null;
-        if ($request->hasFile('photo')) {
+        if ($isPhotoSubmission) {
             $photo = $request->file('photo');
             $imagePath = $photo->store('proofs', 'public');
-            // Pass the stored path and reported price — OcrService validates the image is real
-            $extractedPrice = $this->ocrService->extractPrice($imagePath, (double)$fields['price']);
+            // Run OCR to check it's a genuine price board — but this does NOT auto-approve
+            $firstPrice = (double)reset($sanitizedPrices);
+            $extractedPrice = $this->ocrService->extractPrice($imagePath, $firstPrice);
             if ($extractedPrice !== null) {
                 $ocrVerified = true;
             }
         }
 
-        // Check for exact duplicate submission by same user for same station & fuel type within 2 minutes
-        $recentDuplicate = FuelPrice::where('station_id', $station->id)
-            ->where('fuel_type', $fields['fuel_type'])
-            ->where('reported_by', $user->id)
-            ->where('price', $fields['price'])
-            ->where('created_at', '>=', now()->subMinutes(2))
-            ->first();
+        $batchId = (string) Str::uuid();
+        $createdRecords = [];
+        $hasAnomaly = false;
 
-        if ($recentDuplicate) {
-            return response([
-                'message' => 'Price already recorded recently.',
-                'price' => $recentDuplicate,
-                'anomaly_flagged' => false,
+        // 5. Create FuelPrice records for every fuel variant in this single submission
+        foreach ($sanitizedPrices as $fuelType => $price) {
+            // Check for exact duplicate submission by same user for same station & fuel type within 2 minutes
+            $recentDuplicate = FuelPrice::where('station_id', $station->id)
+                ->where('fuel_type', $fuelType)
+                ->where('reported_by', $user->id)
+                ->where('price', $price)
+                ->where('created_at', '>=', now()->subMinutes(2))
+                ->first();
+
+            if ($recentDuplicate) {
+                $createdRecords[] = $recentDuplicate;
+                continue;
+            }
+
+            $priceRecord = FuelPrice::create([
+                'id' => (string) Str::uuid(),
+                'batch_id' => $batchId,
+                'station_id' => $station->id,
+                'fuel_type' => $fuelType,
+                'price' => $price,
+                'reported_by' => $user->id,
+                'status' => $status,
+                'created_at' => now(),
+                'image_path' => $imagePath,
+                'ocr_verified' => $ocrVerified,
                 'is_inside_geofence' => $isInsideGeofence,
-            ], 200);
-        }
+            ]);
 
-        // 3. Create price record
-        $priceRecord = FuelPrice::create([
-            'id' => (string) Str::uuid(),
-            'station_id' => $station->id,
-            'fuel_type' => $fields['fuel_type'],
-            'price' => $fields['price'],
-            'reported_by' => $user->id,
-            'status' => $status,
-            'created_at' => now(),
-            'image_path' => $imagePath,
-            'ocr_verified' => $ocrVerified,
-            'is_inside_geofence' => $isInsideGeofence,
-        ]);
-
-        // 4. Anomaly detection (only for crowdsourced prices)
-        if ($status === 'crowdsourced') {
-            $anomalyResult = $this->priceValidator->checkPriceAnomaly(
-                $station->id, 
-                $fields['fuel_type'], 
-                (double)$fields['price'], 
-                $user, 
-                $ocrVerified
-            );
-            
-            if ($anomalyResult['is_anomaly']) {
+            // Photo submissions by motorists: always create an AnomalyLog so admin
+            // must explicitly approve or reject before the price goes live.
+            if ($status === 'pending_photo_review') {
+                $ocrNote = $ocrVerified ? 'OCR detected a valid price board. ' : '';
                 AnomalyLog::create([
-                    'id' => (string) Str::uuid(),
-                    'station_id' => $station->id,
-                    'price_id' => $priceRecord->id,
-                    'description' => $anomalyResult['description'],
-                    'status' => 'pending',
+                    'id'          => (string) Str::uuid(),
+                    'station_id'  => $station->id,
+                    'price_id'    => $priceRecord->id,
+                    'description' => $ocrNote . 'Motorist submitted prices with a photo — awaiting admin image audit and approval before publishing.',
+                    'status'      => 'pending',
                 ]);
+                $hasAnomaly = true;
+            // Regular crowdsourced submission: run anomaly detection as usual
+            } elseif ($status === 'crowdsourced') {
+                $anomalyResult = $this->priceValidator->checkPriceAnomaly(
+                    $station->id,
+                    $fuelType,
+                    (double)$price,
+                    $user,
+                    $ocrVerified
+                );
 
-                return response([
-                    'message' => 'Price submitted but flagged for moderation due to standard deviation anomaly.',
-                    'price' => $priceRecord,
-                    'anomaly_flagged' => true,
-                ], 202);
-            } else {
-                // If not flagged and reporter is a motorist, increment trust score
-                if ($user->role === 'motorist') {
-                    $user->trust_score = min(100, $user->trust_score + 2);
-                    $user->save();
+                if ($anomalyResult['is_anomaly']) {
+                    AnomalyLog::create([
+                        'id' => (string) Str::uuid(),
+                        'station_id' => $station->id,
+                        'price_id' => $priceRecord->id,
+                        'description' => $anomalyResult['description'],
+                        'status' => 'pending',
+                    ]);
+                    $hasAnomaly = true;
                 }
-            }
-        } else {
-            // Partner/Merchant override: resolve any pending anomaly logs for this station and fuel type
-            $pendingAnomalies = AnomalyLog::where('station_id', $station->id)
-                ->where('status', 'pending')
-                ->whereHas('price', function ($q) use ($fields) {
-                    $q->where('fuel_type', $fields['fuel_type']);
-                })->get();
+            } else {
+                // Partner/Admin override: resolve pending anomaly logs for this station and fuel type
+                $pendingAnomalies = AnomalyLog::where('station_id', $station->id)
+                    ->where('status', 'pending')
+                    ->whereHas('price', function ($q) use ($fuelType) {
+                        $q->where('fuel_type', $fuelType);
+                    })->get();
 
-            foreach ($pendingAnomalies as $anomaly) {
-                $anomaly->status = 'resolved';
-                $anomaly->save();
+                foreach ($pendingAnomalies as $anomaly) {
+                    $anomaly->status = 'resolved';
+                    $anomaly->save();
+                }
+
+                FuelPrice::where('station_id', $station->id)
+                    ->where('fuel_type', $fuelType)
+                    ->where('status', 'crowdsourced')
+                    ->delete();
             }
 
-            // Automatically invalidate/deactivate conflicting crowdsourced prices
-            FuelPrice::where('station_id', $station->id)
-                ->where('fuel_type', $fields['fuel_type'])
-                ->where('status', 'crowdsourced')
-                ->delete();
+            $createdRecords[] = $priceRecord;
         }
+
+        // Trust score bonus only for clean crowdsourced reports (not pending review)
+        if ($status === 'crowdsourced' && !$hasAnomaly && $user->role === 'motorist') {
+            $user->trust_score = min(100, $user->trust_score + 2);
+            $user->save();
+        }
+
+        $primaryRecord = !empty($createdRecords) ? $createdRecords[0] : null;
+
+        $responseMessage = $status === 'pending_photo_review'
+            ? 'Photo submission received. An admin will review and approve your prices before they go live.'
+            : ($isInsideGeofence
+                ? 'Price(s) updated successfully.'
+                : 'Recorded successfully. Waiting for other motorists to submit matching prices.');
 
         return response([
-            'message' => $isInsideGeofence 
-                ? 'Price updated successfully.' 
-                : 'Recorded successfully. Waiting for other motorists to submit prices.',
-            'price' => $priceRecord,
-            'anomaly_flagged' => false,
+            'message'            => $responseMessage,
+            'batch_id'           => $batchId,
+            'price'              => $primaryRecord,
+            'prices'             => $createdRecords,
+            'anomaly_flagged'    => $hasAnomaly,
             'is_inside_geofence' => $isInsideGeofence,
-        ], 201);
+            'pending_review'     => $status === 'pending_photo_review',
+        ], $hasAnomaly ? 202 : 201);
     }
 
     // GET /api/gas-stations/routing (Net-Cost Pathfinding)
@@ -509,103 +555,244 @@ class GasStationController extends Controller
         return response($updates, 200);
     }
 
+    // Helper to find all related prices in the same submission
+    private function getRelatedPrices(string $id)
+    {
+        $fp = FuelPrice::find($id);
+        if (!$fp) {
+            return FuelPrice::where('batch_id', $id)->get();
+        }
+
+        if (!empty($fp->batch_id)) {
+            return FuelPrice::where('batch_id', $fp->batch_id)->get();
+        }
+
+        if (!empty($fp->image_path)) {
+            $byImg = FuelPrice::where('image_path', $fp->image_path)->get();
+            if ($byImg->count() > 1) return $byImg;
+        }
+
+        if ($fp->created_at) {
+            $timeRange = FuelPrice::where('station_id', $fp->station_id)
+                ->where('reported_by', $fp->reported_by)
+                ->whereBetween('created_at', [
+                    \Carbon\Carbon::parse($fp->created_at)->subSeconds(10),
+                    \Carbon\Carbon::parse($fp->created_at)->addSeconds(10)
+                ])
+                ->get();
+            if ($timeRange->count() > 0) return $timeRange;
+        }
+
+        return collect([$fp]);
+    }
+
     // GET /api/price-submissions (Admin Summary of All Submitted Fuel Prices)
     public function getAllSubmissions()
     {
         $prices = FuelPrice::with(['station', 'reporter', 'anomalyLogs'])
             ->orderBy('created_at', 'desc')
-            ->get()
-            ->map(function ($fp) {
-                $anomaly = $fp->anomalyLogs->first();
-                $calculatedStatus = 'pending';
+            ->get();
 
-                if ($anomaly && $anomaly->status === 'dismissed') {
-                    $calculatedStatus = 'rejected';
-                } elseif ($anomaly && $anomaly->status === 'resolved') {
-                    $calculatedStatus = 'approved';
-                } elseif ($anomaly && $anomaly->status === 'pending') {
-                    $calculatedStatus = 'pending';
-                } elseif ($fp->status === 'merchant_verified' || $fp->ocr_verified) {
-                    $calculatedStatus = 'verified';
-                } elseif ($fp->is_inside_geofence) {
-                    $calculatedStatus = 'verified';
-                } else {
-                    $calculatedStatus = 'pending';
+        $grouped = [];
+
+        foreach ($prices as $fp) {
+            $timeBucket = $fp->created_at ? floor(\Carbon\Carbon::parse($fp->created_at)->timestamp / 10) : 0;
+
+            if (!empty($fp->batch_id)) {
+                $groupKey = 'batch_' . $fp->batch_id;
+            } elseif (!empty($fp->image_path)) {
+                $groupKey = 'img_' . $fp->image_path;
+            } elseif ($fp->created_at) {
+                $groupKey = 'time_' . $fp->station_id . '_' . $fp->reported_by . '_' . $timeBucket;
+            } else {
+                $groupKey = 'single_' . $fp->id;
+            }
+
+            // Also check if an earlier record with image_path from same station + reporter within 10s exists
+            // to group legacy submissions that generated separate photos for each variant
+            if (!empty($fp->image_path)) {
+                foreach ($grouped as $k => $records) {
+                    $firstRec = $records[0];
+                    if (!empty($firstRec->image_path) &&
+                        $firstRec->station_id === $fp->station_id &&
+                        $firstRec->reported_by === $fp->reported_by &&
+                        abs(\Carbon\Carbon::parse($firstRec->created_at)->diffInSeconds(\Carbon\Carbon::parse($fp->created_at))) <= 10) {
+                        $groupKey = $k;
+                        break;
+                    }
+                }
+            }
+
+            if (!isset($grouped[$groupKey])) {
+                $grouped[$groupKey] = [];
+            }
+            $grouped[$groupKey][] = $fp;
+        }
+
+        $submissions = [];
+
+        foreach ($grouped as $group) {
+            $primary = $group[0];
+            $variants = [];
+            $hasPendingAnomaly = false;
+            $hasDismissedAnomaly = false;
+            $hasResolvedAnomaly = false;
+            $allVerified = true;
+            $anyInsideGeofence = false;
+            $anyOcrVerified = false;
+            $primaryAnomalyId = null;
+
+            foreach ($group as $fp) {
+                $anomaly = $fp->anomalyLogs->first();
+                if ($anomaly && !$primaryAnomalyId) {
+                    $primaryAnomalyId = $anomaly->id;
                 }
 
-                return [
-                    'id'                 => $fp->id,
-                    'station_id'         => $fp->station_id,
-                    'station_name'       => $fp->station ? $fp->station->name : 'Unknown Station',
-                    'station_branch'     => $fp->station ? $fp->station->branch : 'Main',
-                    'fuel_type'          => $fp->fuel_type,
-                    'price'              => (float)$fp->price,
-                    'reported_by'        => $fp->reported_by,
-                    'reporter_name'      => $fp->reporter ? $fp->reporter->name : 'Motorist',
-                    'trust_score'        => $fp->reporter ? $fp->reporter->trust_score : 50,
-                    'status'             => $fp->status,
-                    'ocr_verified'       => (bool)$fp->ocr_verified,
-                    'is_inside_geofence' => (bool)$fp->is_inside_geofence,
-                    'calculated_status'  => $calculatedStatus,
-                    'image_path'         => $fp->image_path,
-                    'created_at'         => $fp->created_at ? \Carbon\Carbon::parse($fp->created_at)->toIso8601String() : now()->toIso8601String(),
-                    'anomaly_id'         => $anomaly ? $anomaly->id : null,
-                ];
-            });
+                $variantStatus = 'pending';
+                if ($fp->status === 'pending_photo_review') {
+                    // Held for admin image audit — not yet live
+                    $variantStatus = 'pending_photo_review';
+                    $hasPendingAnomaly = true;
+                    $allVerified = false;
+                } elseif ($anomaly && $anomaly->status === 'dismissed') {
+                    $variantStatus = 'rejected';
+                    $hasDismissedAnomaly = true;
+                    $allVerified = false;
+                } elseif ($anomaly && $anomaly->status === 'resolved') {
+                    $variantStatus = 'approved';
+                    $hasResolvedAnomaly = true;
+                } elseif ($anomaly && $anomaly->status === 'pending') {
+                    $variantStatus = 'pending';
+                    $hasPendingAnomaly = true;
+                    $allVerified = false;
+                } elseif ($fp->status === 'merchant_verified' || $fp->ocr_verified || $fp->is_inside_geofence) {
+                    $variantStatus = 'verified';
+                } else {
+                    $variantStatus = 'pending';
+                    $allVerified = false;
+                }
 
-        return response($prices, 200);
+                if ($fp->is_inside_geofence) $anyInsideGeofence = true;
+                if ($fp->ocr_verified) $anyOcrVerified = true;
+
+                $variants[] = [
+                    'id'                => $fp->id,
+                    'fuel_type'         => $fp->fuel_type,
+                    'price'             => (float)$fp->price,
+                    'status'            => $fp->status,
+                    'calculated_status' => $variantStatus,
+                    'ocr_verified'      => (bool)$fp->ocr_verified,
+                    'anomaly_id'        => $anomaly ? $anomaly->id : null,
+                ];
+            }
+
+            // Determine overall status — pending_photo_review takes priority
+            $hasPendingPhotoReview = collect($group)->contains(fn($fp) => $fp->status === 'pending_photo_review');
+            if ($hasPendingPhotoReview) {
+                $overallStatus = 'pending_photo_review';
+            } elseif ($hasPendingAnomaly) {
+                $overallStatus = 'pending';
+            } elseif ($hasDismissedAnomaly) {
+                $overallStatus = 'rejected';
+            } elseif ($hasResolvedAnomaly) {
+                $overallStatus = 'approved';
+            } elseif ($allVerified && ($anyInsideGeofence || $anyOcrVerified || $primary->status === 'merchant_verified')) {
+                $overallStatus = 'verified';
+            } else {
+                $overallStatus = 'pending';
+            }
+
+            $fuelTypeLabel = count($variants) === 1
+                ? $variants[0]['fuel_type']
+                : implode(', ', array_map(function($v) { return $v['fuel_type']; }, $variants));
+
+            $submissions[] = [
+                'id'                 => $primary->id,
+                'batch_id'           => $primary->batch_id,
+                'price_ids'          => array_column($variants, 'id'),
+                'station_id'         => $primary->station_id,
+                'station_name'       => $primary->station ? $primary->station->name : 'Unknown Station',
+                'station_branch'     => $primary->station ? $primary->station->branch : 'Main',
+                'variants'           => $variants,
+                'fuel_type'          => $fuelTypeLabel,
+                'price'              => count($variants) === 1 ? $variants[0]['price'] : null,
+                'reported_by'        => $primary->reported_by,
+                'reporter_name'      => $primary->reporter ? $primary->reporter->name : 'Motorist',
+                'trust_score'        => $primary->reporter ? $primary->reporter->trust_score : 50,
+                'status'             => $primary->status,
+                'ocr_verified'       => $anyOcrVerified,
+                'is_inside_geofence' => $anyInsideGeofence,
+                'calculated_status'  => $overallStatus,
+                'image_path'         => $primary->image_path,
+                'created_at'         => $primary->created_at ? \Carbon\Carbon::parse($primary->created_at)->toIso8601String() : now()->toIso8601String(),
+                'anomaly_id'         => $primaryAnomalyId,
+            ];
+        }
+
+        return response($submissions, 200);
     }
 
     // POST /api/price-submissions/{id}/approve
     public function approveSubmission($id)
     {
-        $fp = FuelPrice::find($id);
-        if (!$fp) {
+        $prices = $this->getRelatedPrices($id);
+        if ($prices->isEmpty()) {
             return response(['message' => 'Price submission not found'], 404);
         }
 
-        $fp->is_inside_geofence = true;
-        $fp->save();
+        foreach ($prices as $fp) {
+            // If this was a pending photo review, promote to crowdsourced so it goes live
+            if ($fp->status === 'pending_photo_review') {
+                $fp->status = 'crowdsourced';
+            }
+            $fp->is_inside_geofence = true; // Treat admin approval as geofence-verified
+            $fp->save();
 
-        $anomalies = AnomalyLog::where('price_id', $fp->id)->get();
-        foreach ($anomalies as $anomaly) {
-            $anomaly->status = 'resolved';
-            $anomaly->save();
+            // Resolve all anomaly/review logs for this price
+            $anomalies = AnomalyLog::where('price_id', $fp->id)->get();
+            foreach ($anomalies as $anomaly) {
+                $anomaly->status = 'resolved';
+                $anomaly->save();
+            }
         }
 
-        if ($fp->reporter && $fp->reporter->role === 'motorist') {
-            $fp->reporter->trust_score = min(100, $fp->reporter->trust_score + 5);
-            $fp->reporter->save();
+        $reporter = $prices->first()->reporter;
+        if ($reporter && $reporter->role === 'motorist') {
+            $reporter->trust_score = min(100, $reporter->trust_score + 5);
+            $reporter->save();
         }
 
-        return response(['message' => 'Price submission approved & verified successfully.'], 200);
+        return response(['message' => 'Price submission approved — prices are now live for motorists.'], 200);
     }
 
     // POST /api/price-submissions/{id}/reject
     public function rejectSubmission($id)
     {
-        $fp = FuelPrice::find($id);
-        if (!$fp) {
+        $prices = $this->getRelatedPrices($id);
+        if ($prices->isEmpty()) {
             return response(['message' => 'Price submission not found'], 404);
         }
 
-        $anomaly = AnomalyLog::where('price_id', $fp->id)->first();
-        if (!$anomaly) {
-            AnomalyLog::create([
-                'id'          => (string) Str::uuid(),
-                'station_id'  => $fp->station_id,
-                'price_id'    => $fp->id,
-                'description' => 'Price submission rejected manually by administrator.',
-                'status'      => 'dismissed',
-            ]);
-        } else {
-            $anomaly->status = 'dismissed';
-            $anomaly->save();
+        foreach ($prices as $fp) {
+            $anomaly = AnomalyLog::where('price_id', $fp->id)->first();
+            if (!$anomaly) {
+                AnomalyLog::create([
+                    'id'          => (string) Str::uuid(),
+                    'station_id'  => $fp->station_id,
+                    'price_id'    => $fp->id,
+                    'description' => 'Price submission rejected manually by administrator.',
+                    'status'      => 'dismissed',
+                ]);
+            } else {
+                $anomaly->status = 'dismissed';
+                $anomaly->save();
+            }
         }
 
-        if ($fp->reporter && $fp->reporter->role === 'motorist') {
-            $fp->reporter->trust_score = max(0, $fp->reporter->trust_score - 10);
-            $fp->reporter->save();
+        $reporter = $prices->first()->reporter;
+        if ($reporter && $reporter->role === 'motorist') {
+            $reporter->trust_score = max(0, $reporter->trust_score - 10);
+            $reporter->save();
         }
 
         return response(['message' => 'Price submission rejected.'], 200);

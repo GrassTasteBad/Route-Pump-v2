@@ -78,14 +78,12 @@ class _PartnerDashboardState extends State<PartnerDashboard> {
         _loadMockBranchInfo(partnerStationId);
       }
     } catch (e) {
-      AppState().isSandboxMode = true;
-      _loadMockBranchInfo(partnerStationId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Server unreachable. Operating Partner Portal in Sandbox Mode!'),
-            backgroundColor: Colors.amber,
-            duration: Duration(seconds: 3),
+          SnackBar(
+            content: Text('Server unreachable at $apiBaseUrl. Check network connection.'),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 4),
           ),
         );
       }

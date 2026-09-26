@@ -6,9 +6,9 @@ import '../models/gas_station.dart';
 import '../models/vehicle_profile.dart';
 import '../models/catalog_item.dart';
 
-// API Base URL — 10.0.2.2 is the Android emulator alias for host localhost
+// API Base URL — points to host machine on the local network
 String _defaultApiUrl() {
-  if (!kIsWeb && Platform.isAndroid) return 'http://10.0.2.2:8000/api';
+  if (!kIsWeb && Platform.isAndroid) return 'http://192.168.1.223:8000/api';
   return 'http://127.0.0.1:8000/api';
 }
 
@@ -17,9 +17,11 @@ String apiBaseUrl = _defaultApiUrl();
 Future<void> loadApiBaseUrl() async {
   final prefs = await SharedPreferences.getInstance();
   String stored = prefs.getString('api_base_url') ?? _defaultApiUrl();
-  // Auto-migrate: if stored URL uses 127.0.0.1 but we're on Android emulator, fix it
-  if (!kIsWeb && Platform.isAndroid && stored.contains('127.0.0.1')) {
-    stored = stored.replaceAll('127.0.0.1', '10.0.2.2');
+  // Auto-migrate: if stored URL uses old emulator alias or localhost, update to local network IP
+  if (!kIsWeb &&
+      Platform.isAndroid &&
+      (stored.contains('127.0.0.1') || stored.contains('10.0.2.2'))) {
+    stored = 'http://192.168.1.223:8000/api';
     await prefs.setString('api_base_url', stored);
   }
   apiBaseUrl = stored;
@@ -40,14 +42,16 @@ class AppState {
   Map<String, dynamic>? currentUser;
   bool isSandboxMode = false;
 
-  static List<List<double>> _generateFixedGeofence(double lat, double lng, {double radiusMeters = 15.0}) {
+  static List<List<double>> _generateFixedGeofence(double lat, double lng,
+      {double radiusMeters = 15.0}) {
     const earthRadius = 6371000.0;
     List<List<double>> points = [];
     const numPoints = 16;
     for (int i = 0; i < numPoints; i++) {
       final angle = (i * 360.0 / numPoints) * pi / 180.0;
       final dLat = (radiusMeters / earthRadius) * cos(angle);
-      final dLng = (radiusMeters / (earthRadius * cos(lat * pi / 180.0))) * sin(angle);
+      final dLng =
+          (radiusMeters / (earthRadius * cos(lat * pi / 180.0))) * sin(angle);
       points.add([
         lat + (dLat * 180.0 / pi),
         lng + (dLng * 180.0 / pi),
@@ -112,14 +116,59 @@ class AppState {
   ];
 
   List<CatalogItem> mockCatalog = [
-    CatalogItem(id: 'c1', make: 'Toyota', model: 'Vios', year: 2022, displacement: '1.3L', fuelType: 'unleaded', defaultEfficiency: 14.5, defaultIdlingRate: 1.00),
-    CatalogItem(id: 'c2', make: 'Mitsubishi', model: 'Mirage', year: 2021, displacement: '1.2L', fuelType: 'unleaded', defaultEfficiency: 16.2, defaultIdlingRate: 0.80),
-    CatalogItem(id: 'c3', make: 'Honda', model: 'Civic', year: 2023, displacement: '1.5T', fuelType: 'unleaded', defaultEfficiency: 12.8, defaultIdlingRate: 1.20),
-    CatalogItem(id: 'c4', make: 'Isuzu', model: 'D-Max', year: 2020, displacement: '3.0L', fuelType: 'diesel', defaultEfficiency: 11.2, defaultIdlingRate: 1.80),
-    CatalogItem(id: 'c5', make: 'Toyota', model: 'Fortuner', year: 2022, displacement: '2.8L', fuelType: 'diesel', defaultEfficiency: 10.5, defaultIdlingRate: 1.80),
+    CatalogItem(
+        id: 'c1',
+        make: 'Toyota',
+        model: 'Vios',
+        year: 2022,
+        displacement: '1.3L',
+        fuelType: 'unleaded',
+        defaultEfficiency: 14.5,
+        defaultIdlingRate: 1.00),
+    CatalogItem(
+        id: 'c2',
+        make: 'Mitsubishi',
+        model: 'Mirage',
+        year: 2021,
+        displacement: '1.2L',
+        fuelType: 'unleaded',
+        defaultEfficiency: 16.2,
+        defaultIdlingRate: 0.80),
+    CatalogItem(
+        id: 'c3',
+        make: 'Honda',
+        model: 'Civic',
+        year: 2023,
+        displacement: '1.5T',
+        fuelType: 'unleaded',
+        defaultEfficiency: 12.8,
+        defaultIdlingRate: 1.20),
+    CatalogItem(
+        id: 'c4',
+        make: 'Isuzu',
+        model: 'D-Max',
+        year: 2020,
+        displacement: '3.0L',
+        fuelType: 'diesel',
+        defaultEfficiency: 11.2,
+        defaultIdlingRate: 1.80),
+    CatalogItem(
+        id: 'c5',
+        make: 'Toyota',
+        model: 'Fortuner',
+        year: 2022,
+        displacement: '2.8L',
+        fuelType: 'diesel',
+        defaultEfficiency: 10.5,
+        defaultIdlingRate: 1.80),
   ];
 
-  VehicleProfile? mockProfile = VehicleProfile(id: 'p1', catalogId: 'c1', vehicleType: 'Sedan', fuelEfficiency: 14.5, idlingRate: 1.00);
+  VehicleProfile? mockProfile = VehicleProfile(
+      id: 'p1',
+      catalogId: 'c1',
+      vehicleType: 'Sedan',
+      fuelEfficiency: 14.5,
+      idlingRate: 1.00);
 
   Map<String, String> getHeaders() {
     return {
@@ -130,12 +179,16 @@ class AppState {
   }
 
   // Distance helper (Haversine)
-  double getHaversineDistance(double lat1, double lon1, double lat2, double lon2) {
+  double getHaversineDistance(
+      double lat1, double lon1, double lat2, double lon2) {
     const double earthRadius = 6371; // km
     double dLat = _deg2rad(lat2 - lat1);
     double dLon = _deg2rad(lon2 - lon1);
     double a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(_deg2rad(lat1)) * cos(_deg2rad(lat2)) * sin(dLon / 2) * sin(dLon / 2);
+        cos(_deg2rad(lat1)) *
+            cos(_deg2rad(lat2)) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
     double c = 2 * atan2(sqrt(a), sqrt(1 - a));
     return earthRadius * c;
   }

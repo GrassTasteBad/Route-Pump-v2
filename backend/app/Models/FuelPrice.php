@@ -14,6 +14,7 @@ class FuelPrice extends Model
 
     protected $fillable = [
         'id',
+        'batch_id',
         'station_id',
         'fuel_type',
         'price',
@@ -59,6 +60,8 @@ class FuelPrice extends Model
     {
         return self::where('station_id', $stationId)
             ->where('fuel_type', $fuelType)
+            // Never surface prices that are awaiting admin photo review
+            ->where('status', '!=', 'pending_photo_review')
             ->orderBy('created_at', 'desc')
             ->whereNotExists(function ($query) {
                 $query->selectRaw(1)
@@ -78,14 +81,14 @@ class FuelPrice extends Model
                 if ($priceRecord->ocr_verified) {
                     return true;
                 }
-                
-                // Motorist submitted within range of geofence: accepts and updates station price IMMEDIATELY!
+
+                // Motorist submitted within range of geofence: accepts and updates station price immediately
                 if ($priceRecord->is_inside_geofence) {
                     return true;
                 }
 
                 // Motorist submitted away from geofence (remotely):
-                // Only accepts and changes station price if 3 or more distinct motorists have submitted the exact same price far from geofence
+                // Only accepts and changes station price if 3 or more distinct motorists submitted the same price
                 $remoteDistinctCount = self::where('station_id', $priceRecord->station_id)
                     ->where('fuel_type', $priceRecord->fuel_type)
                     ->where('price', $priceRecord->price)
@@ -97,7 +100,7 @@ class FuelPrice extends Model
                     ])
                     ->distinct('reported_by')
                     ->count('reported_by');
-                    
+
                 return $remoteDistinctCount >= 3;
             });
     }

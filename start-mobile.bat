@@ -9,4 +9,4 @@ start "RoutePump Mobile" cmd /k "cd /d "%~dp0mobile" && flutter run"
 
 echo.
 echo Both components launched!
-echo If offline, the mobile app will automatically fallback to Sandbox Mode.
+echo Backend reachable at http://192.168.1.223:8000 / http://localhost:8000

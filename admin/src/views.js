@@ -475,13 +475,17 @@ export function updateAnomaliesTable() {
   // 2. Filter data
   const filtered = state.anomalies.filter(log => {
     const matchesStatus = anomaliesFilterStatus === 'all' || log.status === anomaliesFilterStatus;
-    const matchesFuel = !anomaliesFilterFuel || (log.price && log.price.fuel_type === anomaliesFilterFuel);
+    const matchesFuel = !anomaliesFilterFuel ||
+      (log.price && log.price.fuel_type === anomaliesFilterFuel) ||
+      (log.variants && log.variants.some(v => v.fuel_type === anomaliesFilterFuel));
     const q = anomaliesSearchQuery.toLowerCase();
+    const hasVariantMatch = log.variants && log.variants.some(v => v.fuel_type.toLowerCase().includes(q));
     const matchesSearch = !q ||
       (log.station && log.station.name && log.station.name.toLowerCase().includes(q)) ||
       (log.station && log.station.branch && log.station.branch.toLowerCase().includes(q)) ||
       (log.price && log.price.reporter && log.price.reporter.name && log.price.reporter.name.toLowerCase().includes(q)) ||
-      (log.description && log.description.toLowerCase().includes(q));
+      (log.description && log.description.toLowerCase().includes(q)) ||
+      hasVariantMatch;
     return matchesStatus && matchesFuel && matchesSearch;
   });
 
@@ -506,19 +510,68 @@ export function updateAnomaliesTable() {
   const pagedItems = filtered.slice(startIdx, endIdx);
 
   pagedItems.forEach(log => {
-    // Price & Variance computation
-    const reportedPrice = log.price?.price ? Number(log.price.price) : 0;
-    const stationCurrentPrice = log.station?.prices?.[log.price?.fuel_type] ? Number(log.station.prices[log.price.fuel_type]) : 0;
-    
-    let varianceBadge = '<span class="badge-variance-normal"><i class="fa-solid fa-check"></i> Standard</span>';
-    if (stationCurrentPrice > 0 && reportedPrice > 0) {
-      const pct = (((reportedPrice - stationCurrentPrice) / stationCurrentPrice) * 100).toFixed(1);
-      const isPositive = pct >= 0;
-      if (Math.abs(pct) >= 10) {
-        varianceBadge = `<span class="badge-variance-high"><i class="fa-solid fa-triangle-exclamation"></i> ${isPositive ? '+' : ''}${pct}% Variance</span>`;
-      } else {
-        varianceBadge = `<span class="badge-variance-normal"><i class="fa-solid fa-shield-halved"></i> ${isPositive ? '+' : ''}${pct}% Variance</span>`;
+    const hasMultipleVariants = log.variants && log.variants.length > 1;
+
+    // Fuel Variant HTML
+    let fuelVariantsHtml;
+    let reportedPricesHtml;
+
+    if (hasMultipleVariants) {
+      fuelVariantsHtml = `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${log.variants.map(v => `
+            <div style="height:22px; display:flex; align-items:center;">
+              <span class="badge badge-cyan" style="text-transform:capitalize; font-size:11px; padding:2px 8px; font-weight:600;">
+                ${v.fuel_type}
+              </span>
+            </div>
+          `).join('')}
+        </div>`;
+
+      reportedPricesHtml = `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${log.variants.map(v => {
+            const rPrice = v.price ? Number(v.price) : 0;
+            const currentBase = log.station?.prices?.[v.fuel_type] ? Number(log.station.prices[v.fuel_type]) : 0;
+            let vBadge = '';
+            if (currentBase > 0 && rPrice > 0) {
+              const pct = (((rPrice - currentBase) / currentBase) * 100).toFixed(1);
+              const isPositive = pct >= 0;
+              if (Math.abs(pct) >= 10) {
+                vBadge = ` <span class="badge-variance-high" style="font-size:10px; padding:1px 5px;"><i class="fa-solid fa-triangle-exclamation"></i> ${isPositive ? '+' : ''}${pct}%</span>`;
+              } else {
+                vBadge = ` <span class="badge-variance-normal" style="font-size:10px; padding:1px 5px;">${isPositive ? '+' : ''}${pct}%</span>`;
+              }
+            }
+            return `
+              <div style="height:22px; display:flex; align-items:center; font-size:14px; font-weight:700; color:var(--text-primary);">
+                ₱${rPrice.toFixed(2)}${vBadge}
+              </div>
+            `;
+          }).join('')}
+        </div>`;
+    } else {
+      const v = (log.variants && log.variants[0]) || log.price || {};
+      const reportedPrice = v.price ? Number(v.price) : (log.price?.price ? Number(log.price.price) : 0);
+      const fuelType = v.fuel_type || log.price?.fuel_type || 'Fuel';
+      const stationCurrentPrice = log.station?.prices?.[fuelType] ? Number(log.station.prices[fuelType]) : 0;
+
+      let varianceBadge = '<span class="badge-variance-normal"><i class="fa-solid fa-check"></i> Standard</span>';
+      if (stationCurrentPrice > 0 && reportedPrice > 0) {
+        const pct = (((reportedPrice - stationCurrentPrice) / stationCurrentPrice) * 100).toFixed(1);
+        const isPositive = pct >= 0;
+        if (Math.abs(pct) >= 10) {
+          varianceBadge = `<span class="badge-variance-high"><i class="fa-solid fa-triangle-exclamation"></i> ${isPositive ? '+' : ''}${pct}% Variance</span>`;
+        } else {
+          varianceBadge = `<span class="badge-variance-normal"><i class="fa-solid fa-shield-halved"></i> ${isPositive ? '+' : ''}${pct}% Variance</span>`;
+        }
       }
+
+      fuelVariantsHtml = `<span class="badge badge-cyan" style="text-transform: capitalize;">${fuelType}</span>`;
+      reportedPricesHtml = `
+        <div style="font-size: 15px; font-weight: 700; color: var(--text-primary);">₱${reportedPrice.toFixed(2)}</div>
+        <div>${varianceBadge}</div>
+      `;
     }
 
     // Reporter & Trust Score
@@ -533,8 +586,29 @@ export function updateAnomaliesTable() {
       trustPill = `<span class="trust-pill-med"><i class="fa-solid fa-shield-halved"></i> ${trustScore} Med Trust</span>`;
     }
 
+    // Photo Proof Thumbnail
+    const imagePath = log.image_path || log.price?.image_path;
+    let photoCellHtml;
+    if (imagePath) {
+      const safePath = (imagePath || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      const thumbSrc = `${PROOF_STORAGE_BASE}/${imagePath}`;
+      photoCellHtml = `
+        <div class="proof-thumb-wrap" onclick="window.__rpViewProof('${safePath}')" title="Click to view full proof photo">
+          <img src="${thumbSrc}" class="proof-thumb" alt="Price proof photo" loading="lazy"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+          <div class="proof-thumb-err" style="display:none;width:56px;height:56px;border-radius:8px;background:#1e293b;align-items:center;justify-content:center;">
+            <i class="fa-solid fa-image-slash" style="color:#64748b;font-size:18px;"></i>
+          </div>
+          <div class="proof-thumb-overlay"><i class="fa-solid fa-magnifying-glass-plus"></i></div>
+        </div>`;
+    } else {
+      photoCellHtml = `<span style="font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:4px;">
+        <i class="fa-solid fa-ban" style="color:#475569;"></i> No Photo
+      </span>`;
+    }
+
     // Method & Time
-    const isOcr = log.description?.toLowerCase().includes('ocr') || log.description?.toLowerCase().includes('photo');
+    const isOcr = log.description?.toLowerCase().includes('ocr') || !!imagePath || log.price?.ocr_verified || (log.variants && log.variants.some(v => v.ocr_verified));
     const methodBadge = isOcr
       ? '<span class="method-badge-ocr"><i class="fa-solid fa-camera"></i> OCR Upload</span>'
       : '<span class="method-badge-manual"><i class="fa-solid fa-keyboard"></i> Manual Input</span>';
@@ -543,17 +617,25 @@ export function updateAnomaliesTable() {
       hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric'
     });
 
-    // Status Badge & Action Buttons
+    // Status Badge
+    const isPhotoReview = (log.price?.status === 'pending_photo_review') || (log.variants && log.variants.some(v => v.price_status === 'pending_photo_review')) || (!!imagePath && log.status === 'pending');
     let statusBadge = '<span class="badge badge-warning"><i class="fa-solid fa-clock"></i> Pending Review</span>';
-    const actionButtons = `
-      <button class="btn-inspect btn-anomaly-inspect" data-id="${log.id}"><i class="fa-solid fa-eye"></i> Audit</button>
-    `;
-
     if (log.status === 'resolved') {
       statusBadge = '<span class="badge badge-success"><i class="fa-solid fa-check"></i> Approved</span>';
     } else if (log.status === 'dismissed') {
       statusBadge = '<span class="badge badge-danger"><i class="fa-solid fa-xmark"></i> Rejected</span>';
+    } else if (isPhotoReview) {
+      statusBadge = `<span class="badge" style="background:rgba(245,158,11,0.18);color:#f59e0b;border:1px solid rgba(245,158,11,0.4);">
+        <i class="fa-solid fa-camera-rotate"></i> Pending Photo Review
+      </span>`;
     }
+
+    // Actions — Audit button opens detailed modal inspection
+    const actionButtons = `
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <button class="btn-inspect btn-anomaly-inspect" data-id="${log.id}"><i class="fa-solid fa-eye"></i> Audit</button>
+      </div>
+    `;
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -561,43 +643,21 @@ export function updateAnomaliesTable() {
         <div><strong>${log.station?.name || 'Unknown Station'}</strong></div>
         <div style="color: var(--text-secondary); font-size: 12.5px;"><i class="fa-solid fa-location-dot" style="color: var(--accent-cyan);"></i> ${log.station?.branch || 'Main'}</div>
       </td>
-      <td><span class="badge badge-cyan" style="text-transform: capitalize;">${log.price?.fuel_type || 'Fuel'}</span></td>
-      <td>
-        <div style="font-size: 15px; font-weight: 700; color: var(--text-primary);">₱${reportedPrice.toFixed(2)}</div>
-        <div>${varianceBadge}</div>
-      </td>
+      <td>${fuelVariantsHtml}</td>
+      <td>${reportedPricesHtml}</td>
       <td>
         <div><strong>${reporterName}</strong></div>
         <div style="margin-top: 2px;">${trustPill}</div>
       </td>
+      <td style="padding:8px 12px;">${photoCellHtml}</td>
       <td>
         <div>${methodBadge}</div>
         <div style="color: var(--text-secondary); font-size: 11.5px; margin-top: 3px;">${formattedDate}</div>
       </td>
       <td>${statusBadge}</td>
-      <td>
-        <div style="display: flex; gap: 6px; align-items: center;">
-          ${actionButtons}
-        </div>
-      </td>
+      <td>${actionButtons}</td>
     `;
     tableBody.appendChild(tr);
-  });
-
-  // Action Bindings (Approve / Reject)
-  document.querySelectorAll('.btn-anomaly-action').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = btn.getAttribute('data-id');
-      const action = btn.getAttribute('data-action');
-      try {
-        await apiFetch(`/anomalies/${id}/${action}`, { method: 'POST' });
-        showGlobalAlert(`Manual report ${action === 'resolve' ? 'approved' : 'rejected'} successfully!`);
-        loadAllData();
-      } catch (err) {
-        showGlobalAlert(err.message, 'error');
-      }
-    });
   });
 
   // Inspection Bindings (Audit Modal)
@@ -631,30 +691,59 @@ function openReportDetailModal(log) {
   const modalActions = document.getElementById('report-modal-actions');
   if (!modalBody) return;
 
-  const reportedPrice = log.price?.price ? Number(log.price.price) : 0;
-  const currentStationPrice = log.station?.prices?.[log.price?.fuel_type] ? Number(log.station.prices[log.price.fuel_type]) : 0;
   const reporter = log.price?.reporter;
   const trustScore = reporter?.trust_score ?? 80;
+  const imagePath = log.image_path || log.price?.image_path;
+  const variants = log.variants || (log.price ? [log.price] : []);
 
-  let deltaText = 'No price baseline';
-  if (currentStationPrice > 0 && reportedPrice > 0) {
-    const diff = reportedPrice - currentStationPrice;
-    deltaText = `${diff >= 0 ? '+' : ''}₱${diff.toFixed(2)} vs Current Station Baseline (₱${currentStationPrice.toFixed(2)})`;
+  let variantsComparisonHtml = '';
+  if (variants.length > 0) {
+    variantsComparisonHtml = `
+      <div style="margin-bottom: 18px; border: 1px solid var(--border-glass); border-radius: 10px; overflow: hidden; background: rgba(255,255,255,0.02);">
+        <div style="padding: 10px 14px; background: rgba(255,255,255,0.04); font-size: 12px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">
+          Submitted Fuel Prices vs Current Baseline
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border-glass); color: var(--text-secondary); text-align: left;">
+              <th style="padding: 8px 14px;">Fuel Variant</th>
+              <th style="padding: 8px 14px;">Submitted Price</th>
+              <th style="padding: 8px 14px;">Current Baseline</th>
+              <th style="padding: 8px 14px;">Variance</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${variants.map(v => {
+              const repPrice = v.price ? Number(v.price) : 0;
+              const basePrice = log.station?.prices?.[v.fuel_type] ? Number(log.station.prices[v.fuel_type]) : 0;
+              let varHtml = '<span style="color:var(--text-secondary);">No baseline</span>';
+              if (basePrice > 0 && repPrice > 0) {
+                const diff = repPrice - basePrice;
+                const pct = (((repPrice - basePrice) / basePrice) * 100).toFixed(1);
+                const isPos = pct >= 0;
+                const color = Math.abs(pct) >= 10 ? 'var(--accent-rose)' : 'var(--accent-emerald)';
+                varHtml = `<span style="color:${color};font-weight:600;">${isPos ? '+' : ''}₱${diff.toFixed(2)} (${isPos ? '+' : ''}${pct}%)</span>`;
+              }
+              return `
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+                  <td style="padding: 9px 14px;"><span class="badge badge-cyan" style="text-transform:capitalize; font-size:11px;">${v.fuel_type}</span></td>
+                  <td style="padding: 9px 14px; font-weight: 700; color: var(--text-primary); font-size: 14px;">₱${repPrice.toFixed(2)}</td>
+                  <td style="padding: 9px 14px; color: var(--text-secondary);">${basePrice > 0 ? `₱${basePrice.toFixed(2)}` : '—'}</td>
+                  <td style="padding: 9px 14px;">${varHtml}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
   }
 
   modalBody.innerHTML = `
-    <div class="audit-details-grid">
+    <div class="audit-details-grid" style="margin-bottom: 16px;">
       <div class="audit-stat-box">
         <div class="audit-stat-label">Gas Station</div>
         <div class="audit-stat-value" style="font-size: 15px;">${log.station?.name || 'Unknown'} (${log.station?.branch || 'Main'})</div>
-      </div>
-      <div class="audit-stat-box">
-        <div class="audit-stat-label">Fuel Variant</div>
-        <div class="audit-stat-value" style="font-size: 15px; text-transform: capitalize; color: var(--accent-cyan);">${log.price?.fuel_type || 'Fuel'}</div>
-      </div>
-      <div class="audit-stat-box">
-        <div class="audit-stat-label">Reported Price</div>
-        <div class="audit-stat-value" style="color: var(--text-primary);">₱${reportedPrice.toFixed(2)}</div>
       </div>
       <div class="audit-stat-box">
         <div class="audit-stat-label">Reporter Rating</div>
@@ -662,9 +751,26 @@ function openReportDetailModal(log) {
       </div>
     </div>
 
-    <div class="audit-comparison-box">
-      <div class="audit-stat-label" style="margin-bottom: 10px;">Statistical Variance Analysis</div>
-      <div style="font-size: 13.5px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">${deltaText}</div>
+    ${imagePath ? `
+      <div style="margin-bottom: 16px; padding: 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-glass); border-radius: 10px;">
+        <div class="audit-stat-label" style="margin-bottom: 8px;"><i class="fa-solid fa-camera" style="color: var(--accent-cyan);"></i> Motorist Verification Photo Proof</div>
+        <div style="display: flex; align-items: center; gap: 14px;">
+          <div class="proof-thumb-wrap" onclick="window.__rpViewProof('${(imagePath || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;')}')" title="Click to view full photo" style="width: 76px; height: 76px; flex-shrink: 0;">
+            <img src="${PROOF_STORAGE_BASE}/${imagePath}" class="proof-thumb" alt="Price proof photo">
+            <div class="proof-thumb-overlay"><i class="fa-solid fa-magnifying-glass-plus"></i></div>
+          </div>
+          <div>
+            <div style="font-size: 13.5px; font-weight: 600; color: var(--text-primary);">OCR Board Photo Submitted</div>
+            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 3px;">Audit the photographed fuel price board against the entered prices below. Click the thumbnail to view high-resolution image.</div>
+          </div>
+        </div>
+      </div>
+    ` : ''}
+
+    ${variantsComparisonHtml}
+
+    <div class="audit-comparison-box" style="margin-bottom: 16px;">
+      <div class="audit-stat-label" style="margin-bottom: 6px;">Audit Notes & System Flag</div>
       <div style="font-size: 12.5px; color: var(--text-secondary); line-height: 1.5;">${log.description || 'Reported price submission flagged for moderation threshold audit.'}</div>
     </div>
 
@@ -672,7 +778,7 @@ function openReportDetailModal(log) {
       <div class="audit-impact-callout approve">
         <i class="fa-solid fa-circle-info" style="font-size: 18px;"></i>
         <div>
-          <strong>Approval Impact:</strong> Approving will publish ₱${reportedPrice.toFixed(2)} to active motorists & add <strong>+10 Trust Score</strong> to ${reporter?.name || 'reporter'}.
+          <strong>Approval Impact:</strong> Approving will publish all submitted fuel prices to active motorists and award <strong>+10 Trust Score</strong> to ${reporter?.name || 'reporter'}.
         </div>
       </div>
     ` : ''}
@@ -689,7 +795,7 @@ function openReportDetailModal(log) {
       try {
         await apiFetch(`/anomalies/${log.id}/resolve`, { method: 'POST' });
         window.closeModal('report-detail-modal');
-        showGlobalAlert('Manual report approved & published successfully!');
+        showGlobalAlert('Report approved! Submitted prices are now live for motorists.');
         loadAllData();
       } catch (err) {
         showGlobalAlert(err.message, 'error');
@@ -697,10 +803,11 @@ function openReportDetailModal(log) {
     });
 
     document.getElementById('modal-reject-btn')?.addEventListener('click', async () => {
+      if (!confirm('Are you sure you want to reject this price report?')) return;
       try {
         await apiFetch(`/anomalies/${log.id}/dismiss`, { method: 'POST' });
         window.closeModal('report-detail-modal');
-        showGlobalAlert('Manual report rejected.');
+        showGlobalAlert('Report rejected and dismissed.');
         loadAllData();
       } catch (err) {
         showGlobalAlert(err.message, 'error');
@@ -902,6 +1009,51 @@ let submissionsSearchQuery = '';
 let submissionsStatusFilter = '';
 let submissionsFuelFilter = '';
 
+// ── Photo Proof Lightbox ─────────────────────────────────────────────────────
+const _storageHost = window.location.hostname || '127.0.0.1';
+const PROOF_STORAGE_BASE = `http://${_storageHost}:8000/storage`;
+
+window.__rpViewProof = function (imagePath) {
+  const modal  = document.getElementById('proof-photo-modal');
+  const img    = document.getElementById('proof-photo-img');
+  const loader = document.getElementById('proof-photo-loader');
+  if (!modal || !img) return;
+  img.style.display = 'none';
+  if (loader) loader.style.display = 'flex';
+  modal.style.display = 'flex';
+  img.onload  = () => { if (loader) loader.style.display = 'none'; img.style.display = 'block'; };
+  img.onerror = () => { if (loader) loader.style.display = 'none'; img.alt = 'Failed to load'; img.style.display = 'block'; };
+  img.src = `${PROOF_STORAGE_BASE}/${imagePath}`;
+};
+
+window.__rpCloseProof = function () {
+  const modal = document.getElementById('proof-photo-modal');
+  const img   = document.getElementById('proof-photo-img');
+  if (modal) modal.style.display = 'none';
+  if (img)   img.src = '';
+};
+
+window.__rpApproveSubmission = async function (id) {
+  try {
+    await apiFetch(`/price-submissions/${id}/approve`, { method: 'POST' });
+    showGlobalAlert('All fuel variants in this submission approved & verified!');
+    loadAllData();
+  } catch (err) {
+    showGlobalAlert(err.message, 'error');
+  }
+};
+
+window.__rpRejectSubmission = async function (id) {
+  if (!confirm('Are you sure you want to reject this price submission?')) return;
+  try {
+    await apiFetch(`/price-submissions/${id}/reject`, { method: 'POST' });
+    showGlobalAlert('Price submission rejected.');
+    loadAllData();
+  } catch (err) {
+    showGlobalAlert(err.message, 'error');
+  }
+};
+
 export function updateSubmissionsTable() {
   const tableBody = document.getElementById('submissions-table-body');
   if (!tableBody) return;
@@ -945,32 +1097,39 @@ export function updateSubmissionsTable() {
   const submissions = state.submissions || [];
 
   // Metrics
-  const totalCount = submissions.length;
-  const verifiedCount = submissions.filter(s => s.calculated_status === 'verified').length;
-  const pendingCount = submissions.filter(s => s.calculated_status === 'pending').length;
-  const rejectedCount = submissions.filter(s => s.calculated_status === 'rejected').length;
+  const totalCount     = submissions.length;
+  const verifiedCount  = submissions.filter(s => s.calculated_status === 'verified').length;
+  const pendingCount   = submissions.filter(s => s.calculated_status === 'pending' || s.calculated_status === 'pending_photo_review').length;
+  const rejectedCount  = submissions.filter(s => s.calculated_status === 'rejected').length;
+  const withPhotoCount = submissions.filter(s => s.image_path).length;
 
-  const statTotal = document.getElementById('sub-stat-total');
+  const statTotal    = document.getElementById('sub-stat-total');
   const statVerified = document.getElementById('sub-stat-verified');
-  const statPending = document.getElementById('sub-stat-pending');
+  const statPending  = document.getElementById('sub-stat-pending');
   const statRejected = document.getElementById('sub-stat-rejected');
+  const statPhotos   = document.getElementById('sub-stat-photos');
 
-  if (statTotal) statTotal.innerText = totalCount;
+  if (statTotal)    statTotal.innerText    = totalCount;
   if (statVerified) statVerified.innerText = verifiedCount;
-  if (statPending) statPending.innerText = pendingCount;
+  if (statPending)  statPending.innerText  = pendingCount;
+  if (statPhotos)   statPhotos.innerText   = withPhotoCount;
   if (statRejected) statRejected.innerText = rejectedCount;
 
   // Filter Submissions
   const filtered = submissions.filter(sub => {
     const q = submissionsSearchQuery.toLowerCase();
+    const hasVariantMatch = sub.variants && sub.variants.some(v => v.fuel_type.toLowerCase().includes(q));
     const matchesSearch = !q ||
       (sub.station_name && sub.station_name.toLowerCase().includes(q)) ||
       (sub.station_branch && sub.station_branch.toLowerCase().includes(q)) ||
       (sub.reporter_name && sub.reporter_name.toLowerCase().includes(q)) ||
-      (sub.fuel_type && sub.fuel_type.toLowerCase().includes(q));
+      (sub.fuel_type && sub.fuel_type.toLowerCase().includes(q)) ||
+      hasVariantMatch;
 
     const matchesStatus = !submissionsStatusFilter || sub.calculated_status === submissionsStatusFilter;
-    const matchesFuel = !submissionsFuelFilter || sub.fuel_type === submissionsFuelFilter;
+    const matchesFuel = !submissionsFuelFilter || 
+      sub.fuel_type === submissionsFuelFilter ||
+      (sub.variants && sub.variants.some(v => v.fuel_type === submissionsFuelFilter));
 
     return matchesSearch && matchesStatus && matchesFuel;
   });
@@ -1004,7 +1163,14 @@ export function updateSubmissionsTable() {
     }
 
     let statusBadge = '<span class="badge badge-warning"><i class="fa-solid fa-clock"></i> Pending (Remote)</span>';
-    if (sub.calculated_status === 'approved') {
+    if (sub.calculated_status === 'pending_photo_review') {
+      const ocrTag = sub.ocr_verified
+        ? ' <span style="font-size:10px; opacity:.8;"><i class="fa-solid fa-wand-magic-sparkles"></i> OCR ✓</span>'
+        : '';
+      statusBadge = `<span class="badge" style="background:rgba(245,158,11,0.18);color:#f59e0b;border:1px solid rgba(245,158,11,0.4);">
+        <i class="fa-solid fa-camera-rotate"></i> Pending Photo Review${ocrTag}
+      </span>`;
+    } else if (sub.calculated_status === 'approved') {
       statusBadge = '<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> Approved (Admin Decision)</span>';
     } else if (sub.calculated_status === 'rejected') {
       statusBadge = '<span class="badge badge-danger"><i class="fa-solid fa-circle-xmark"></i> Rejected (Admin Decision)</span>';
@@ -1012,25 +1178,79 @@ export function updateSubmissionsTable() {
       statusBadge = '<span class="badge badge-success"><i class="fa-solid fa-shield-check"></i> Verified (Geofence / OCR)</span>';
     }
 
+    // Audits are made strictly in the Reports tab — Submitted Prices is purely the record
     const formattedDate = new Date(sub.created_at || Date.now()).toLocaleTimeString('en-PH', {
       hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric'
     });
+
+    // Photo proof thumbnail (1 photo for all variants)
+    let photoCellHtml;
+    if (sub.image_path) {
+      const safePath = (sub.image_path || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      const thumbSrc = `${PROOF_STORAGE_BASE}/${sub.image_path}`;
+      photoCellHtml = `
+        <div class="proof-thumb-wrap" onclick="window.__rpViewProof('${safePath}')" title="View full proof photo (1 photo for all fuel variants)">
+          <img src="${thumbSrc}" class="proof-thumb" alt="Price proof" loading="lazy"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+          <div class="proof-thumb-err" style="display:none;width:56px;height:56px;border-radius:8px;background:#1e293b;align-items:center;justify-content:center;">
+            <i class="fa-solid fa-image-slash" style="color:#64748b;font-size:18px;"></i>
+          </div>
+          <div class="proof-thumb-overlay"><i class="fa-solid fa-magnifying-glass-plus"></i></div>
+        </div>`;
+    } else {
+      photoCellHtml = `<span style="font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:4px;">
+        <i class="fa-solid fa-ban" style="color:#475569;"></i> No Photo
+      </span>`;
+    }
+
+    // Single submission: display every fuel variant available on the image together
+    let fuelVariantsHtml;
+    let submittedPricesHtml;
+
+    if (sub.variants && sub.variants.length > 1) {
+      fuelVariantsHtml = `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${sub.variants.map(v => `
+            <div style="height:22px; display:flex; align-items:center;">
+              <span class="badge badge-cyan" style="text-transform:capitalize; font-size:11px; padding:2px 8px; font-weight:600;">
+                ${v.fuel_type}
+              </span>
+            </div>
+          `).join('')}
+        </div>`;
+
+      submittedPricesHtml = `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${sub.variants.map(v => `
+            <div style="height:22px; display:flex; align-items:center; font-size:14px; font-weight:700; color:var(--text-primary);">
+              &#8369;${Number(v.price).toFixed(2)}
+            </div>
+          `).join('')}
+        </div>`;
+    } else {
+      const v = (sub.variants && sub.variants[0]) || sub;
+      fuelVariantsHtml = `<span class="badge badge-cyan" style="text-transform:capitalize;">${v.fuel_type}</span>`;
+      submittedPricesHtml = `<div style="font-size:15px; font-weight:700; color:var(--text-primary);">&#8369;${Number(v.price).toFixed(2)}</div>`;
+    }
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>
         <div><strong>${sub.station_name}</strong></div>
-        <div style="color: var(--text-secondary); font-size: 12.5px;"><i class="fa-solid fa-location-dot" style="color: var(--accent-cyan);"></i> ${sub.station_branch}</div>
+        <div style="color:var(--text-secondary);font-size:12.5px;"><i class="fa-solid fa-location-dot" style="color:var(--accent-cyan);"></i> ${sub.station_branch}</div>
       </td>
-      <td><span class="badge badge-cyan" style="text-transform: capitalize;">${sub.fuel_type}</span></td>
-      <td><div style="font-size: 15px; font-weight: 700; color: var(--text-primary);">₱${Number(sub.price).toFixed(2)}</div></td>
+      <td>${fuelVariantsHtml}</td>
+      <td>${submittedPricesHtml}</td>
       <td>
         <div><strong>${sub.reporter_name}</strong></div>
-        <div style="margin-top: 2px;">${trustPill}</div>
+        <div style="margin-top:2px;">${trustPill}</div>
       </td>
+      <td style="padding:8px 12px;">${photoCellHtml}</td>
       <td><div>${locationBadge}</div></td>
-      <td><div style="font-size: 12.5px; color: var(--text-secondary);">${formattedDate}</div></td>
-      <td>${statusBadge}</td>
+      <td><div style="font-size:12.5px;color:var(--text-secondary);">${formattedDate}</div></td>
+      <td>
+        ${statusBadge}
+      </td>
     `;
     tableBody.appendChild(tr);
   });
